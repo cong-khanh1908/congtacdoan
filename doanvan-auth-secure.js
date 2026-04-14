@@ -1,33 +1,19 @@
 /**
  * ╔══════════════════════════════════════════════════════════════════════════════╗
- * ║   DOANVAN — AUTH SECURE PATCH  v3.0                                        ║
- * ║   Tác giả: Nâng cấp bảo mật hệ thống đăng nhập                            ║
+ * ║   DOANVAN — AUTH SECURE  v4.0  (Nâng cấp toàn diện)                       ║
  * ║                                                                              ║
- * ║  KHẮC PHỤC CÁC LỖ HỔNG BẢO MẬT NGHIÊM TRỌNG:                             ║
- * ║  ❌ LỖI CŨ: Nhập 6 số bất kỳ → vào được với quyền Admin cao nhất          ║
- * ║  ❌ LỖI CŨ: "Quên PIN? Đặt lại mặc định" cho phép bất kỳ ai bypass auth  ║
- * ║  ❌ LỖI CŨ: Tài khoản local (DVAuth) không có phân biệt role               ║
- * ║  ❌ LỖI CŨ: dvSeedDefaultAccount() tạo PIN 123456 ẩn, ai cũng đăng nhập  ║
- * ║                                                                              ║
- * ║  THIẾT KẾ MỚI — 3 LUỒNG ĐĂNG NHẬP RÕ RÀNG:                               ║
- * ║                                                                              ║
- * ║  [1] ADMIN (cấu hình GS + quản lý tài khoản)                               ║
- * ║      → Phải có MTConfig với role='admin' trong Google Sheet                 ║
- * ║      → Đăng nhập bằng PIN đã đăng ký qua Google Sheet                      ║
- * ║      → Toàn quyền: cấu hình, tạo mã mời, quản lý user                     ║
- * ║                                                                              ║
- * ║  [2] USER THƯỜNG (dùng ứng dụng sau khi được cấp mã mời)                   ║
- * ║      → Phải có Invite Code từ Admin                                         ║
- * ║      → Đăng nhập bằng PIN cá nhân đã tạo khi tham gia                      ║
- * ║      → Quyền hạn: sử dụng ứng dụng, cấu hình kết nối GS/AI cá nhân        ║
- * ║      → KHÔNG được: tạo tài khoản khác, quản lý user, cấu hình hệ thống    ║
- * ║                                                                              ║
- * ║  [3] CHƯA CÀI ĐẶT (lần đầu sử dụng, chưa có GS)                          ║
- * ║      → Màn hình hướng dẫn cài đặt Google Sheet                             ║
- * ║      → Không cho phép vào ứng dụng khi chưa cấu hình                       ║
- * ║                                                                              ║
- * ║  CÀI ĐẶT: Thêm script này SAU tất cả các module khác, CUỐI cùng            ║
- * ║  <script src="doanvan-auth-secure.js"></script>                             ║
+ * ║  KHẮC PHỤC & NÂNG CẤP so với v3.0:                                         ║
+ * ║  ✅ FIX: Đóng modal AdminSetup không còn mất overlay đăng nhập              ║
+ * ║  ✅ FIX: Sau AdminSetup hoàn tất → tự đăng nhập PIN ngay, không cần reload ║
+ * ║  ✅ FIX: SyncCode dùng dvSecureAuth overlay thay vì dvAuthModal cũ          ║
+ * ║  ✅ FIX: JoinWithCode sau khi xong → hiện ngay màn hình PIN đăng nhập       ║
+ * ║  ✅ FIX: Nút "Đổi tài khoản" / "Đăng xuất" ngay màn hình PIN login         ║
+ * ║  ✅ FIX: Admin step-1 SA bắt buộc test kết nối trước khi sang step-2        ║
+ * ║  ✅ FIX: Lockout timer tự clear đúng sau khi hết thời gian                  ║
+ * ║  ✅ NEW: Giao diện toàn bộ được polish — animation, feedback trực quan       ║
+ * ║  ✅ NEW: Bảng số PIN hỗ trợ cả keyboard vật lý (desktop)                    ║
+ * ║  ✅ NEW: Màn hình loading mượt sau đăng nhập thành công                     ║
+ * ║  ✅ NEW: Hiển thị avatar chữ cái đầu tên người dùng                         ║
  * ╚══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -36,116 +22,90 @@
 // ─────────────────────────────────────────────────────────────────────
 //  HẰNG SỐ & CẤU HÌNH
 // ─────────────────────────────────────────────────────────────────────
-const AUTH_SECURE_VERSION = '3.0';
-const SESSION_TTL = 8 * 60 * 60 * 1000; // 8 giờ
-const MAX_FAILED_ATTEMPTS = 5;           // Khoá sau 5 lần sai PIN
-const LOCKOUT_DURATION = 5 * 60 * 1000; // Khoá 5 phút
+const AUTH_SECURE_VERSION = '4.0';
+const SESSION_TTL         = 8 * 60 * 60 * 1000; // 8 giờ
+const MAX_FAILED_ATTEMPTS = 5;
+const LOCKOUT_DURATION    = 5 * 60 * 1000; // 5 phút
 
-// Keys lưu trữ
 const KEYS = {
-  MT_CONFIG:     'mt_config',           // Cấu hình multitenant (có role)
-  SESSION:       'dv_secure_session',   // Session hiện tại (sessionStorage)
-  FAILED:        'dv_auth_failed',      // Số lần nhập sai
-  LOCKOUT_UNTIL: 'dv_lockout_until',    // Thời gian hết khoá
+  MT_CONFIG:     'mt_config',
+  SESSION:       'dv_secure_session',
+  FAILED:        'dv_auth_failed',
+  LOCKOUT_UNTIL: 'dv_lockout_until',
 };
 
 // ─────────────────────────────────────────────────────────────────────
-//  TIỆN ÍCH: HASH SHA-256 (async)
+//  HASH UTILITIES
 // ─────────────────────────────────────────────────────────────────────
 async function _secureHash(pin) {
   const data = new TextEncoder().encode('doanvan_salt_2024_' + pin);
   const buf  = await crypto.subtle.digest('SHA-256', data);
   return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
 }
-
-// Hash đồng bộ fallback (DJB2) — chỉ dùng khi crypto.subtle không khả dụng
 function _fallbackHash(pin) {
   let h = 5381;
-  const salt = 'doanvan_salt_2024_' + pin;
-  for (let i = 0; i < salt.length; i++) h = ((h << 5) + h) ^ salt.charCodeAt(i);
-  return 'fb_' + (h >>> 0).toString(16).padStart(8, '0');
+  const s = 'doanvan_salt_2024_' + pin;
+  for (let i = 0; i < s.length; i++) h = ((h << 5) + h) ^ s.charCodeAt(i);
+  return (h >>> 0).toString(16).padStart(8, '0');
 }
-
 async function _hashPIN(pin) {
   try {
     if (crypto?.subtle) return await _secureHash(pin);
     return _fallbackHash(pin);
-  } catch {
-    return _fallbackHash(pin);
-  }
+  } catch { return _fallbackHash(pin); }
 }
+function _legacyHash(pin) {
+  let h = 5381;
+  for (let i = 0; i < pin.length; i++) h = ((h << 5) + h) ^ pin.charCodeAt(i);
+  return (h >>> 0).toString(16).padStart(8, '0');
+}
+function _mtLegacyHash(pin) { return _legacyHash(pin); }
 
 // ─────────────────────────────────────────────────────────────────────
-//  QUẢN LÝ SESSION BẢO MẬT
+//  SESSION MANAGER
 // ─────────────────────────────────────────────────────────────────────
 const SecureSession = {
   start(role, username, orgId) {
-    const sess = {
-      ts:        Date.now(),
-      role,
-      username,
-      orgId:     orgId || 'all',
-      token:     Array.from(crypto.getRandomValues(new Uint8Array(16)))
-                      .map(b => b.toString(16).padStart(2, '0')).join(''),
-    };
-    sessionStorage.setItem(KEYS.SESSION, JSON.stringify(sess));
-    return sess;
+    sessionStorage.setItem(KEYS.SESSION, JSON.stringify({
+      role, username, orgId, ts: Date.now(), ttl: SESSION_TTL
+    }));
   },
-
   get() {
     try {
-      const sess = JSON.parse(sessionStorage.getItem(KEYS.SESSION) || 'null');
-      if (!sess) return null;
-      if (Date.now() - sess.ts > SESSION_TTL) {
-        this.end();
-        return null;
-      }
-      return sess;
+      const s = JSON.parse(sessionStorage.getItem(KEYS.SESSION) || 'null');
+      if (!s) return null;
+      if (Date.now() - s.ts > (s.ttl || SESSION_TTL)) { this.end(); return null; }
+      return s;
     } catch { return null; }
   },
-
+  end() { sessionStorage.removeItem(KEYS.SESSION); },
   isValid() { return !!this.get(); },
-
+  isAdmin() { return this.get()?.role === 'admin'; },
   getRole() { return this.get()?.role || null; },
-
-  isAdmin() { return this.getRole() === 'admin'; },
-
-  end() {
-    sessionStorage.removeItem(KEYS.SESSION);
-  },
 };
 
 // ─────────────────────────────────────────────────────────────────────
-//  QUẢN LÝ KHOÁ TÀI KHOẢN (anti-brute-force)
+//  LOCKOUT MANAGER
 // ─────────────────────────────────────────────────────────────────────
 const AuthLock = {
   isLocked() {
     const until = parseInt(localStorage.getItem(KEYS.LOCKOUT_UNTIL) || '0');
     if (Date.now() < until) return true;
-    // Hết hạn khoá → xoá
-    if (until > 0) {
-      localStorage.removeItem(KEYS.LOCKOUT_UNTIL);
-      localStorage.removeItem(KEYS.FAILED);
-    }
+    if (until > 0) { localStorage.removeItem(KEYS.LOCKOUT_UNTIL); localStorage.removeItem(KEYS.FAILED); }
     return false;
   },
-
   remainingSeconds() {
-    const until = parseInt(localStorage.getItem(KEYS.LOCKOUT_UNTIL) || '0');
-    return Math.max(0, Math.ceil((until - Date.now()) / 1000));
+    return Math.max(0, Math.ceil((parseInt(localStorage.getItem(KEYS.LOCKOUT_UNTIL) || '0') - Date.now()) / 1000));
   },
-
   recordFailure() {
     const count = parseInt(localStorage.getItem(KEYS.FAILED) || '0') + 1;
-    localStorage.setItem(KEYS.FAILED, String(count));
+    localStorage.setItem(KEYS.FAILED, count);
     if (count >= MAX_FAILED_ATTEMPTS) {
-      localStorage.setItem(KEYS.LOCKOUT_UNTIL, String(Date.now() + LOCKOUT_DURATION));
-      localStorage.removeItem(KEYS.FAILED);
-      return { locked: true, remaining: LOCKOUT_DURATION / 1000 };
+      localStorage.setItem(KEYS.LOCKOUT_UNTIL, Date.now() + LOCKOUT_DURATION);
+      return { locked: true, attemptsLeft: 0 };
     }
     return { locked: false, attemptsLeft: MAX_FAILED_ATTEMPTS - count };
   },
-
   clearFailures() {
     localStorage.removeItem(KEYS.FAILED);
     localStorage.removeItem(KEYS.LOCKOUT_UNTIL);
@@ -153,187 +113,288 @@ const AuthLock = {
 };
 
 // ─────────────────────────────────────────────────────────────────────
-//  PHÂN TÍCH TRẠNG THÁI ỨNG DỤNG
-//  Xác định luồng đăng nhập phù hợp
+//  LẤY TRẠNG THÁI ỨNG DỤNG
 // ─────────────────────────────────────────────────────────────────────
 function _getAppState() {
-  const mtCfg = (() => {
-    try { return JSON.parse(localStorage.getItem(KEYS.MT_CONFIG) || 'null'); } catch { return null; }
-  })();
-
-  if (!mtCfg?.spreadsheetId || !mtCfg?.user) {
-    return { mode: 'NO_SETUP' };               // Chưa cài đặt GS
-  }
-
-  return {
-    mode:          'MT_AUTH',                  // Có GS → dùng MT auth
-    role:          mtCfg.role || 'member',
-    username:      mtCfg.user?.username || '',
-    displayName:   mtCfg.user?.displayName || 'Người dùng',
-    pinHash:       mtCfg.user?.pinHash || null,
-    spreadsheetId: mtCfg.spreadsheetId,
-    orgName:       mtCfg.orgName || 'Hệ thống',
-    mtCfg,
-  };
+  try {
+    const mtCfg = JSON.parse(localStorage.getItem(KEYS.MT_CONFIG) || 'null');
+    if (!mtCfg?.spreadsheetId || !mtCfg?.user) {
+      return { mode: 'NO_SETUP' };
+    }
+    return {
+      mode:        'MT_AUTH',
+      role:        mtCfg.user?.role || mtCfg.role || 'member',
+      username:    mtCfg.user?.username || '',
+      displayName: mtCfg.user?.displayName || mtCfg.user?.username || 'Người dùng',
+      orgName:     mtCfg.orgName || 'Hệ thống',
+      orgId:       mtCfg.orgId  || 'all',
+    };
+  } catch { return { mode: 'NO_SETUP' }; }
 }
 
 // ─────────────────────────────────────────────────────────────────────
-//  INJECT CSS SECURE AUTH
+//  TRẠNG THÁI NỘI BỘ
+// ─────────────────────────────────────────────────────────────────────
+let _secPinEntry  = '';
+let _secAppState  = null;
+let _lockoutInterval = null;
+
+// ─────────────────────────────────────────────────────────────────────
+//  CSS TOÀN BỘ OVERLAY
 // ─────────────────────────────────────────────────────────────────────
 function _injectSecureCSS() {
-  if (document.getElementById('dv-secure-css')) return;
+  if (document.getElementById('dvSecureAuthCSS')) return;
   const style = document.createElement('style');
-  style.id = 'dv-secure-css';
+  style.id = 'dvSecureAuthCSS';
   style.textContent = `
-  /* ── Secure Auth Overlay ── */
-  #dvSecureAuth {
-    position:fixed;inset:0;z-index:9999;
-    background:linear-gradient(145deg,#0f172a 0%,#1e293b 50%,#0f172a 100%);
-    display:flex;align-items:center;justify-content:center;
-    font-family:'Be Vietnam Pro',sans-serif;
-    animation:dvFadeIn 0.3s ease;
-  }
-  @keyframes dvFadeIn { from{opacity:0;transform:scale(0.97)} to{opacity:1;transform:scale(1)} }
+    /* ── Overlay nền ── */
+    #dvSecureAuth {
+      position: fixed; inset: 0; z-index: 99999;
+      background: rgba(10, 15, 35, 0.92);
+      backdrop-filter: blur(12px);
+      display: flex; align-items: center; justify-content: center;
+      padding: 16px;
+      animation: dvsec-fadeIn 0.25s ease;
+    }
+    @keyframes dvsec-fadeIn { from { opacity:0 } to { opacity:1 } }
 
-  #dvSecureBox {
-    background:#fff;border-radius:20px;width:100%;max-width:400px;
-    box-shadow:0 20px 60px rgba(0,0,0,0.4);overflow:hidden;
-    animation:dvSlideUp 0.35s cubic-bezier(.34,1.56,.64,1);
-  }
-  @keyframes dvSlideUp { from{opacity:0;transform:translateY(30px)} to{opacity:1;transform:translateY(0)} }
+    /* ── Card trung tâm ── */
+    #dvSecureBox {
+      background: #fff;
+      border-radius: 24px;
+      width: 100%; max-width: 380px;
+      box-shadow: 0 32px 80px rgba(0,0,0,0.4), 0 0 0 1px rgba(255,255,255,0.08);
+      overflow: hidden;
+      animation: dvsec-slideUp 0.3s cubic-bezier(0.34,1.56,0.64,1);
+    }
+    @keyframes dvsec-slideUp {
+      from { transform: translateY(24px) scale(0.97); opacity:0 }
+      to   { transform: translateY(0)    scale(1);    opacity:1 }
+    }
 
-  .dvsec-header {
-    background:linear-gradient(135deg,#1a2340,#c0392b);
-    padding:28px 24px 24px;text-align:center;color:#fff;
-  }
-  .dvsec-logo {
-    width:64px;height:64px;border-radius:50%;
-    background:rgba(255,255,255,0.15);
-    display:flex;align-items:center;justify-content:center;
-    font-size:1.8rem;margin:0 auto 12px;
-    border:3px solid rgba(255,255,255,0.3);
-  }
-  .dvsec-title { font-size:1.3rem;font-weight:700;margin:0 0 4px }
-  .dvsec-sub   { font-size:0.82rem;opacity:0.85;margin:0 }
+    /* ── Header ── */
+    .dvsec-header {
+      background: linear-gradient(145deg, #1a2340 0%, #c0392b 100%);
+      padding: 28px 24px 22px;
+      text-align: center; color: #fff; position: relative;
+    }
+    .dvsec-logo {
+      width: 56px; height: 56px; border-radius: 50%;
+      background: rgba(255,255,255,0.15);
+      border: 2px solid rgba(255,255,255,0.3);
+      display: inline-flex; align-items: center; justify-content: center;
+      font-size: 1.5rem; margin-bottom: 10px;
+      backdrop-filter: blur(4px);
+    }
+    .dvsec-avatar {
+      width: 56px; height: 56px; border-radius: 50%;
+      background: rgba(255,255,255,0.2);
+      border: 2px solid rgba(255,255,255,0.4);
+      display: inline-flex; align-items: center; justify-content: center;
+      font-size: 1.6rem; font-weight: 800; margin-bottom: 10px;
+      color: #fff; text-transform: uppercase;
+    }
+    .dvsec-title  { font-size: 1.2rem; font-weight: 800; letter-spacing: 0.5px; }
+    .dvsec-sub    { font-size: 0.8rem; opacity: 0.8; margin-top: 3px; }
 
-  .dvsec-body  { padding:24px }
+    /* Nút đổi tài khoản góc trên phải header */
+    .dvsec-switch-btn {
+      position: absolute; top: 12px; right: 14px;
+      background: rgba(255,255,255,0.15); border: none; border-radius: 8px;
+      color: #fff; font-size: 0.7rem; padding: 5px 9px; cursor: pointer;
+      display: flex; align-items: center; gap: 4px;
+      transition: background 0.15s;
+    }
+    .dvsec-switch-btn:hover { background: rgba(255,255,255,0.25); }
 
-  .dvsec-role-badge {
-    display:inline-flex;align-items:center;gap:6px;
-    padding:5px 12px;border-radius:20px;font-size:0.75rem;font-weight:700;
-    margin-bottom:16px;
-  }
-  .dvsec-role-badge.admin   { background:#fef2f2;color:#c0392b;border:1px solid #fecaca }
-  .dvsec-role-badge.manager { background:#eff6ff;color:#1a2340;border:1px solid #bfdbfe }
-  .dvsec-role-badge.member  { background:#f0fdf4;color:#16a34a;border:1px solid #bbf7d0 }
+    /* ── Body ── */
+    .dvsec-body {
+      padding: 22px 22px 20px;
+    }
 
-  /* PIN dots */
-  .dvsec-pin-row {
-    display:flex;gap:10px;justify-content:center;margin:16px 0 6px;
-  }
-  .dvsec-dot {
-    width:44px;height:44px;border-radius:50%;
-    border:2px solid #e2e8f0;background:#f8fafc;
-    display:flex;align-items:center;justify-content:center;
-    font-size:1.6rem;color:transparent;transition:all .2s;
-  }
-  .dvsec-dot.filled { background:#1a2340;border-color:#1a2340;color:#fff }
-  .dvsec-dot.active { border-color:#c0392b;box-shadow:0 0 0 3px rgba(192,57,43,0.15) }
-  .dvsec-dot.error  { border-color:#dc2626;background:#fef2f2;animation:dvShake .3s }
-  @keyframes dvShake {
-    0%,100%{transform:translateX(0)}
-    20%{transform:translateX(-6px)}60%{transform:translateX(6px)}
-  }
+    /* ── Role badge ── */
+    .dvsec-role-badge {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 5px 12px; border-radius: 20px;
+      font-size: 0.75rem; font-weight: 700;
+      margin-bottom: 14px;
+    }
+    .dvsec-role-badge.admin   { background:#fef2f2; color:#c0392b; border:1px solid #fecaca; }
+    .dvsec-role-badge.manager { background:#eff6ff; color:#1e40af; border:1px solid #bfdbfe; }
+    .dvsec-role-badge.member  { background:#f0fdf4; color:#166534; border:1px solid #bbf7d0; }
 
-  /* Keypad */
-  .dvsec-keypad {
-    display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:16px;
-  }
-  .dvsec-key {
-    padding:14px 0;border-radius:12px;border:1.5px solid #e2e8f0;background:#f8fafc;
-    font-size:1.1rem;font-weight:600;color:#1a2340;cursor:pointer;
-    transition:all .15s;font-family:inherit;
-  }
-  .dvsec-key:hover:not(:disabled) { background:#1a2340;color:#fff;border-color:#1a2340 }
-  .dvsec-key:active:not(:disabled){ transform:scale(0.94) }
-  .dvsec-key.del { color:#c0392b }
-  .dvsec-key:disabled { opacity:0;cursor:default }
+    /* ── PIN dots ── */
+    .dvsec-pin-row {
+      display: flex; gap: 10px; justify-content: center;
+      margin: 12px 0 6px;
+    }
+    .dvsec-dot {
+      width: 44px; height: 44px; border-radius: 50%;
+      background: #f1f5f9; border: 2px solid #e2e8f0;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 1.5rem; color: #cbd5e1;
+      transition: all 0.15s ease;
+    }
+    .dvsec-dot.filled { background: #1a2340; border-color: #1a2340; color: #1a2340;
+      box-shadow: 0 2px 8px rgba(26,35,64,0.3); }
+    .dvsec-dot.active { border-color: #c0392b; box-shadow: 0 0 0 3px rgba(192,57,43,0.15); }
+    .dvsec-dot.error  {
+      background: #fee2e2; border-color: #c0392b; color: #c0392b;
+      animation: dvsec-shake 0.35s ease;
+    }
+    @keyframes dvsec-shake {
+      0%,100%{transform:translateX(0)}
+      20%{transform:translateX(-5px)} 40%{transform:translateX(5px)}
+      60%{transform:translateX(-3px)} 80%{transform:translateX(3px)}
+    }
 
-  .dvsec-error {
-    font-size:0.78rem;color:#dc2626;min-height:18px;text-align:center;margin:4px 0;
-  }
-  .dvsec-lock-msg {
-    background:#fef2f2;border:1px solid #fecaca;border-radius:10px;
-    padding:12px;text-align:center;font-size:0.82rem;color:#dc2626;margin:8px 0;
-  }
-  .dvsec-link-row {
-    text-align:center;font-size:0.78rem;color:#94a3b8;margin-top:14px;
-  }
-  .dvsec-link-row a {
-    color:#1a2340;text-decoration:none;font-weight:600;cursor:pointer;
-  }
-  .dvsec-link-row a:hover { color:#c0392b }
+    /* ── Error text ── */
+    .dvsec-error {
+      text-align: center; font-size: 0.75rem; color: #c0392b;
+      min-height: 18px; margin-bottom: 8px; font-weight: 500;
+    }
 
-  /* No-setup screen */
-  .dvsec-nosetup {
-    text-align:center;padding:8px 0 16px;
-  }
-  .dvsec-nosetup-icon {
-    font-size:3rem;margin-bottom:12px;
-    background:linear-gradient(135deg,#1a2340,#c0392b);
-    -webkit-background-clip:text;-webkit-text-fill-color:transparent;
-  }
-  .dvsec-info-box {
-    background:#f0f9ff;border:1px solid #bae6fd;border-radius:10px;
-    padding:12px 14px;text-align:left;font-size:0.8rem;color:#0c4a6e;
-    margin:12px 0;line-height:1.6;
-  }
-  .dvsec-info-box strong { color:#1a2340 }
-  .dvsec-divider {
-    border:none;border-top:1px solid #f1f5f9;margin:16px 0;
-  }
-  .dvsec-btn {
-    display:block;width:100%;padding:13px;border-radius:12px;border:none;
-    font-family:inherit;font-size:0.9rem;font-weight:600;cursor:pointer;
-    transition:all .2s;margin-bottom:8px;
-  }
-  .dvsec-btn.primary {
-    background:linear-gradient(135deg,#1a2340,#c0392b);color:#fff;
-  }
-  .dvsec-btn.primary:hover { opacity:0.9;transform:translateY(-1px) }
-  .dvsec-btn.ghost {
-    background:#f8fafc;color:#64748b;border:1px solid #e2e8f0;
-  }
-  .dvsec-btn.ghost:hover { background:#f1f5f9 }
+    /* ── Keypad ── */
+    .dvsec-keypad {
+      display: grid; grid-template-columns: repeat(3, 1fr);
+      gap: 8px; margin: 10px 0;
+    }
+    .dvsec-key {
+      aspect-ratio: 1; border: none;
+      background: #f8fafc; border-radius: 12px;
+      font-size: 1.25rem; font-weight: 700; color: #1a2340;
+      cursor: pointer; transition: all 0.1s ease;
+      display: flex; align-items: center; justify-content: center;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+      min-height: 52px;
+    }
+    .dvsec-key:hover:not(:disabled) { background: #e2e8f0; transform: scale(0.97); }
+    .dvsec-key:active:not(:disabled) { background: #cbd5e1; transform: scale(0.93); }
+    .dvsec-key:disabled { opacity:0; pointer-events:none; }
+    .dvsec-key.del { background: #fff0f0; color: #c0392b; }
+    .dvsec-key.del:hover { background: #fee2e2; }
 
-  /* User role indicator badge trên app */
-  #dvSecureRoleBadge {
-    position:fixed;bottom:14px;left:50%;transform:translateX(-50%);
-    background:rgba(26,35,64,0.92);color:#fff;
-    padding:5px 14px;border-radius:20px;font-size:0.72rem;font-weight:600;
-    display:flex;align-items:center;gap:7px;z-index:500;
-    backdrop-filter:blur(8px);border:1px solid rgba(255,255,255,0.1);
-    pointer-events:none;
-  }
-  #dvSecureRoleBadge .role-dot {
-    width:7px;height:7px;border-radius:50%;
-  }
+    /* ── Lock message ── */
+    .dvsec-lock-msg {
+      background: #fff7ed; border: 1px solid #fed7aa;
+      border-radius: 10px; padding: 10px 14px;
+      font-size: 0.78rem; color: #c2410c; text-align: center;
+      margin-bottom: 10px; line-height: 1.6;
+    }
+
+    /* ── Info box ── */
+    .dvsec-info-box {
+      background: #eff6ff; border: 1px solid #bfdbfe;
+      border-radius: 10px; padding: 12px 14px;
+      font-size: 0.78rem; color: #1e40af; line-height: 1.8;
+      margin: 12px 0;
+    }
+
+    /* ── No-setup screen ── */
+    .dvsec-nosetup { text-align: center; }
+    .dvsec-nosetup-icon {
+      width: 60px; height: 60px; border-radius: 50%;
+      background: linear-gradient(135deg,#f59e0b,#c0392b);
+      display: inline-flex; align-items: center; justify-content: center;
+      font-size: 1.5rem; color: #fff; margin-bottom: 12px;
+      box-shadow: 0 4px 14px rgba(192,57,43,0.3);
+    }
+
+    /* ── Buttons ── */
+    .dvsec-btn {
+      width: 100%; padding: 12px 16px; border-radius: 12px;
+      border: none; font-size: 0.9rem; font-weight: 700;
+      cursor: pointer; margin-bottom: 8px;
+      display: flex; align-items: center; justify-content: center; gap: 8px;
+      transition: all 0.15s ease;
+    }
+    .dvsec-btn.primary {
+      background: linear-gradient(135deg, #c0392b, #e74c3c);
+      color: #fff;
+      box-shadow: 0 4px 14px rgba(192,57,43,0.35);
+    }
+    .dvsec-btn.primary:hover { transform: translateY(-1px); box-shadow: 0 6px 18px rgba(192,57,43,0.45); }
+    .dvsec-btn.primary:active { transform: translateY(0); }
+    .dvsec-btn.ghost {
+      background: #f8fafc; color: #475569;
+      border: 1px solid #e2e8f0;
+    }
+    .dvsec-btn.ghost:hover { background: #f1f5f9; border-color: #cbd5e1; }
+    .dvsec-btn:disabled { opacity: 0.6; cursor: not-allowed; transform: none !important; }
+
+    /* ── Divider & link row ── */
+    .dvsec-divider { border: none; border-top: 1px solid #f1f5f9; margin: 12px 0; }
+    .dvsec-link-row {
+      text-align: center; font-size: 0.75rem; color: #94a3b8; margin-top: 6px;
+    }
+    .dvsec-link-row a {
+      color: #c0392b; cursor: pointer; text-decoration: none; font-weight: 600;
+    }
+    .dvsec-link-row a:hover { text-decoration: underline; }
+
+    /* ── Success screen ── */
+    .dvsec-success {
+      text-align: center; padding: 10px 0;
+    }
+    .dvsec-success-icon {
+      width: 64px; height: 64px; border-radius: 50%;
+      background: linear-gradient(135deg,#10b981,#059669);
+      display: inline-flex; align-items: center; justify-content: center;
+      font-size: 1.8rem; color: #fff; margin: 8px auto 14px;
+      animation: dvsec-pop 0.4s cubic-bezier(0.34,1.56,0.64,1);
+    }
+    @keyframes dvsec-pop {
+      from { transform: scale(0); opacity:0 }
+      to   { transform: scale(1); opacity:1 }
+    }
+
+    /* ── Progress bar loading ── */
+    .dvsec-progress {
+      height: 3px; background: #e2e8f0; border-radius: 2px; overflow: hidden; margin-top: 8px;
+    }
+    .dvsec-progress-bar {
+      height: 100%; background: linear-gradient(90deg,#c0392b,#e74c3c);
+      border-radius: 2px;
+      animation: dvsec-progress 1.8s ease forwards;
+    }
+    @keyframes dvsec-progress { from{width:0} to{width:100%} }
+
+    /* ── Form controls bên trong overlay ── */
+    .dvsec-form-group { margin-bottom: 14px; }
+    .dvsec-form-label {
+      display: block; font-size: 0.78rem; font-weight: 700;
+      color: #475569; margin-bottom: 5px;
+    }
+    .dvsec-form-control {
+      width: 100%; padding: 10px 12px; border-radius: 10px;
+      border: 1.5px solid #e2e8f0; font-size: 0.9rem;
+      outline: none; transition: border-color 0.15s;
+      box-sizing: border-box; font-family: inherit;
+    }
+    .dvsec-form-control:focus { border-color: #c0392b; box-shadow: 0 0 0 3px rgba(192,57,43,0.1); }
+    .dvsec-form-control.error { border-color: #c0392b; }
+
+    /* ── Scrollable body cho Join/Sync form ── */
+    .dvsec-body.scroll { max-height: 70vh; overflow-y: auto; }
+
+    /* ── Version badge ── */
+    .dvsec-version {
+      text-align: center; font-size: 0.66rem; color: #cbd5e1; margin-top: 8px;
+    }
   `;
   document.head.appendChild(style);
 }
 
 // ─────────────────────────────────────────────────────────────────────
-//  HIỂN THỊ MÀN HÌNH ĐĂNG NHẬP CHÍNH
+//  MÀN HÌNH CHÍNH — ĐIỀU PHỐI
 // ─────────────────────────────────────────────────────────────────────
-let _secPinEntry = '';
-let _secAppState = null;
-
-function dvSecureShowLogin() {
+window.dvSecureShowLogin = function dvSecureShowLogin() {
   _injectSecureCSS();
-  _secPinEntry = '';
-  _secAppState = _getAppState();
+  _secPinEntry  = '';
+  _secAppState  = _getAppState();
 
   document.getElementById('dvSecureAuth')?.remove();
+  clearInterval(_lockoutInterval);
 
   const overlay = document.createElement('div');
   overlay.id = 'dvSecureAuth';
@@ -342,17 +403,22 @@ function dvSecureShowLogin() {
     overlay.innerHTML = _buildNoSetupUI();
   } else {
     overlay.innerHTML = _buildPINLoginUI(_secAppState);
+    _bindKeyboard();
   }
 
   document.body.appendChild(overlay);
 
-  // Focus event listener
   if (_secAppState.mode !== 'NO_SETUP') {
     _startLockoutTimer();
+    // Focus hỗ trợ keyboard
+    overlay.setAttribute('tabindex', '-1');
+    overlay.focus();
   }
-}
+};
 
-// ─── UI: Chưa cài đặt ────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────
+//  UI: CHƯA CÀI ĐẶT
+// ─────────────────────────────────────────────────────────────────────
 function _buildNoSetupUI() {
   return `
   <div id="dvSecureBox">
@@ -364,75 +430,77 @@ function _buildNoSetupUI() {
     <div class="dvsec-body">
       <div class="dvsec-nosetup">
         <div class="dvsec-nosetup-icon"><i class="fas fa-cog"></i></div>
-        <div style="font-weight:700;font-size:1rem;color:#1a2340;margin-bottom:8px">
+        <div style="font-weight:800;font-size:1rem;color:#1a2340;margin-bottom:6px">
           Chưa cài đặt hệ thống
         </div>
-        <div style="font-size:0.82rem;color:#64748b;margin-bottom:14px">
-          Để sử dụng phần mềm, Admin cần cài đặt kết nối Google Sheet trước.
+        <div style="font-size:0.8rem;color:#64748b;margin-bottom:4px;line-height:1.6">
+          Để sử dụng phần mềm, Admin cần thiết lập kết nối Google Sheet trước.
         </div>
-        <div class="dvsec-info-box">
-          <strong><i class="fas fa-shield-alt" style="color:#c0392b;margin-right:5px"></i>Lưu ý bảo mật:</strong><br>
-          • Chỉ <strong>Admin</strong> mới có thể cài đặt ban đầu<br>
-          • Người dùng khác cần <strong>Mã mời</strong> từ Admin<br>
-          • Mọi tài khoản đều phải xác thực qua PIN riêng
-        </div>
+      </div>
+      <div class="dvsec-info-box">
+        <strong><i class="fas fa-shield-alt" style="color:#c0392b;margin-right:5px"></i>Lưu ý bảo mật:</strong><br>
+        • Chỉ <strong>Admin</strong> mới có thể cài đặt ban đầu<br>
+        • Người dùng khác cần <strong>Mã mời</strong> từ Admin<br>
+        • Mọi tài khoản đều phải xác thực qua PIN riêng
       </div>
       <hr class="dvsec-divider">
       <button class="dvsec-btn primary" onclick="dvSecureOpenAdminSetup()">
-        <i class="fas fa-crown" style="margin-right:8px"></i>Cài đặt Admin (lần đầu)
+        <i class="fas fa-crown"></i>Cài đặt Admin (lần đầu)
       </button>
       <button class="dvsec-btn ghost" onclick="dvSecureOpenJoinWithCode()">
-        <i class="fas fa-ticket-alt" style="margin-right:8px"></i>Tham gia bằng Mã mời
+        <i class="fas fa-ticket-alt"></i>Tham gia bằng Mã mời
       </button>
       <div class="dvsec-link-row" style="margin-top:8px">
-        <i class="fas fa-info-circle" style="margin-right:4px"></i>
-        Nếu đã có tài khoản, hãy dùng <a onclick="dvSecureOpenSyncCode()">Sync Code</a>
+        <i class="fas fa-info-circle" style="margin-right:4px;opacity:0.6"></i>
+        Đã có tài khoản? Dùng <a onclick="dvSecureOpenSyncCode()">Sync Code</a>
       </div>
     </div>
   </div>`;
 }
 
-// ─── UI: Đăng nhập PIN ───────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────
+//  UI: ĐĂNG NHẬP PIN
+// ─────────────────────────────────────────────────────────────────────
 function _buildPINLoginUI(state) {
-  const roleName  = { admin: 'Admin', manager: 'Quản lý', member: 'Đoàn viên' }[state.role] || 'Người dùng';
-  const roleClass = state.role === 'admin' ? 'admin' : state.role === 'manager' ? 'manager' : 'member';
-  const roleIcon  = state.role === 'admin' ? 'fa-crown' : state.role === 'manager' ? 'fa-user-tie' : 'fa-user';
-
-  const isLocked = AuthLock.isLocked();
+  const roleLabel = { admin: 'Admin', manager: 'Quản lý', member: 'Đoàn viên' }[state.role] || 'Người dùng';
+  const roleClass = { admin: 'admin', manager: 'manager', member: 'member' }[state.role] || 'member';
+  const roleIcon  = { admin: 'fa-crown', manager: 'fa-user-tie', member: 'fa-user' }[state.role] || 'fa-user';
+  const avatarChar = (state.displayName || 'U')[0].toUpperCase();
+  const isLocked   = AuthLock.isLocked();
   const failedCount = parseInt(localStorage.getItem(KEYS.FAILED) || '0');
 
   return `
   <div id="dvSecureBox">
     <div class="dvsec-header">
-      <div class="dvsec-logo"><i class="fas fa-star"></i></div>
-      <div class="dvsec-title">ĐoànVăn</div>
-      <div class="dvsec-sub">Xin chào, <strong>${state.displayName}</strong></div>
+      <button class="dvsec-switch-btn" onclick="dvSecureOpenSwitchAccount()" title="Đổi tài khoản / Đăng xuất">
+        <i class="fas fa-exchange-alt"></i> Đổi tài khoản
+      </button>
+      <div class="dvsec-avatar">${avatarChar}</div>
+      <div class="dvsec-title">Xin chào, ${state.displayName}</div>
+      <div class="dvsec-sub">Nhập mã PIN để tiếp tục</div>
     </div>
     <div class="dvsec-body">
-      <div style="text-align:center">
+      <div style="text-align:center;margin-bottom:4px">
         <span class="dvsec-role-badge ${roleClass}">
-          <i class="fas ${roleIcon}"></i>${roleName} · ${state.orgName}
+          <i class="fas ${roleIcon}"></i>${roleLabel} · ${state.orgName}
         </span>
       </div>
 
       ${isLocked ? `
       <div class="dvsec-lock-msg" id="dvSecLockMsg">
-        <i class="fas fa-lock"></i>
+        <i class="fas fa-lock" style="font-size:1.1rem;display:block;margin-bottom:4px"></i>
         Tài khoản tạm khoá do nhập sai nhiều lần.<br>
         Thử lại sau: <strong id="dvSecLockTimer">${AuthLock.remainingSeconds()}s</strong>
-      </div>` : `
-      <div style="font-size:0.8rem;color:#94a3b8;text-align:center;margin-bottom:2px">
-        Nhập mã PIN để đăng nhập
-      </div>`}
+      </div>` : ''}
 
       <div class="dvsec-pin-row" id="dvSecPinDots">
         ${Array(6).fill(0).map((_, i) => `<div class="dvsec-dot" id="dvSecDot${i}">•</div>`).join('')}
       </div>
       <div class="dvsec-error" id="dvSecError">
-        ${!isLocked && failedCount > 0 ? `Còn ${MAX_FAILED_ATTEMPTS - failedCount} lần thử` : ''}
+        ${!isLocked && failedCount > 0 ? `⚠ Còn ${MAX_FAILED_ATTEMPTS - failedCount} lần thử` : ''}
       </div>
 
-      <div class="dvsec-keypad" id="dvSecKeypad" ${isLocked ? 'style="pointer-events:none;opacity:0.4"' : ''}>
+      <div class="dvsec-keypad" id="dvSecKeypad" ${isLocked ? 'style="pointer-events:none;opacity:0.35"' : ''}>
         ${[1,2,3,4,5,6,7,8,9,'',0,'del'].map(k => `
           <button class="dvsec-key${k===''?' ':k==='del'?' del':''}"
             onclick="dvSecKeyPress('${k}')"
@@ -443,20 +511,36 @@ function _buildPINLoginUI(state) {
 
       <div class="dvsec-link-row">
         <a onclick="dvSecureOpenSyncCode()">
-          <i class="fas fa-sync-alt" style="margin-right:4px"></i>Dùng Sync Code
+          <i class="fas fa-sync-alt"></i> Sync Code
         </a>
-        &nbsp;|&nbsp;
+        &nbsp;·&nbsp;
         <a onclick="dvSecureOpenJoinWithCode()">
-          <i class="fas fa-ticket-alt" style="margin-right:4px"></i>Mã mời
+          <i class="fas fa-ticket-alt"></i> Mã mời
         </a>
       </div>
-
-      <div style="text-align:center;margin-top:10px;font-size:0.72rem;color:#cbd5e1">
-        <i class="fas fa-shield-alt" style="margin-right:4px;color:#10b981"></i>
-        Phiên đăng nhập bảo mật · ${AUTH_SECURE_VERSION}
+      <div class="dvsec-version">
+        <i class="fas fa-shield-alt" style="color:#10b981"></i>
+        Phiên bảo mật · Auth Secure v${AUTH_SECURE_VERSION}
       </div>
     </div>
   </div>`;
+}
+
+// ─────────────────────────────────────────────────────────────────────
+//  KEYBOARD VẬT LÝ HỖ TRỢ
+// ─────────────────────────────────────────────────────────────────────
+function _bindKeyboard() {
+  const handler = (e) => {
+    if (!document.getElementById('dvSecureAuth')) {
+      document.removeEventListener('keydown', handler);
+      return;
+    }
+    if (e.key >= '0' && e.key <= '9') dvSecKeyPress(e.key);
+    else if (e.key === 'Backspace') dvSecKeyPress('del');
+    else if (e.key === 'Enter' && _secPinEntry.length === 6) dvSecSubmitPIN();
+  };
+  document.removeEventListener('keydown', handler);
+  document.addEventListener('keydown', handler);
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -497,12 +581,15 @@ function _shakeAndClearPIN(errorMsg) {
   }
   const errEl = document.getElementById('dvSecError');
   if (errEl) errEl.textContent = errorMsg;
+  // Re-enable keypad
+  const kp = document.getElementById('dvSecKeypad');
+  if (kp && !AuthLock.isLocked()) kp.style.pointerEvents = '';
   setTimeout(() => {
     for (let i = 0; i < 6; i++) {
       const d = document.getElementById(`dvSecDot${i}`);
       if (d) d.className = 'dvsec-dot';
     }
-  }, 400);
+  }, 500);
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -516,16 +603,10 @@ window.dvSecSubmitPIN = async function() {
   const state = _secAppState;
   if (!state || state.mode !== 'MT_AUTH') return;
 
-  // Vô hiệu hoá keypad trong lúc xác thực
   const keypad = document.getElementById('dvSecKeypad');
   if (keypad) keypad.style.pointerEvents = 'none';
 
   try {
-    // Thử verify qua MTAuth trước (có GSheet)
-    let loginSuccess = false;
-    let loginCfg     = null;
-
-    // Xác thực PIN: so sánh hash với pinHash trong MT config
     const storedCfg = (() => {
       try { return JSON.parse(localStorage.getItem(KEYS.MT_CONFIG) || 'null'); } catch { return null; }
     })();
@@ -535,35 +616,25 @@ window.dvSecSubmitPIN = async function() {
       return;
     }
 
-    // Thử hash mới (SHA-256) trước
-    const hashNew  = await _hashPIN(pin);
-    // Thử hash cũ (DJB2) để tương thích ngược
-    const hashOld  = _legacyHash(pin);
-    const hashFb   = _fallbackHash(pin);
+    const stored  = storedCfg.user.pinHash;
+    const hashNew = await _hashPIN(pin);
+    const hashOld = _legacyHash(pin);
+    const hashFb  = _fallbackHash(pin);
 
-    const stored = storedCfg.user.pinHash;
-    if (stored === hashNew || stored === hashOld || stored === hashFb || stored === _mtLegacyHash(pin)) {
-      loginSuccess = true;
-      loginCfg     = storedCfg;
-    }
+    const ok = stored === hashNew || stored === hashOld || stored === hashFb || stored === _mtLegacyHash(pin);
 
-    if (loginSuccess && loginCfg) {
+    if (ok) {
       AuthLock.clearFailures();
-      SecureSession.start(loginCfg.role, loginCfg.user.username, loginCfg.orgId);
-
-      // Đồng bộ session với DVAuth cũ (tương thích các module khác)
-      _bridgeLegacySession(loginCfg);
-
-      _dismissAndLaunch(loginCfg);
+      SecureSession.start(storedCfg.user?.role || storedCfg.role, storedCfg.user.username, storedCfg.orgId);
+      _bridgeLegacySession(storedCfg);
+      _showLoginSuccess(storedCfg);
     } else {
-      // PIN sai
       const result = AuthLock.recordFailure();
       if (result.locked) {
         _shakeAndClearPIN('');
-        dvSecureShowLogin(); // Re-render với lockout message
+        dvSecureShowLogin();
       } else {
         _shakeAndClearPIN(`PIN không đúng. Còn ${result.attemptsLeft} lần thử.`);
-        if (keypad) keypad.style.pointerEvents = '';
       }
     }
   } catch (err) {
@@ -573,31 +644,42 @@ window.dvSecSubmitPIN = async function() {
   }
 };
 
-// Hash tương thích ngược với MTAuth cũ (DJB2 đơn giản)
-function _mtLegacyHash(pin) {
-  let h = 5381;
-  for (let i = 0; i < pin.length; i++) h = ((h << 5) + h) ^ pin.charCodeAt(i);
-  return (h >>> 0).toString(16).padStart(8, '0');
+// ─────────────────────────────────────────────────────────────────────
+//  HIỂN THỊ MÀN HÌNH ĐĂNG NHẬP THÀNH CÔNG
+// ─────────────────────────────────────────────────────────────────────
+function _showLoginSuccess(cfg) {
+  const box = document.getElementById('dvSecureBox');
+  if (!box) { _dismissAndLaunch(cfg); return; }
+
+  const roleLabel = { admin: 'Admin', manager: 'Quản lý', member: 'Đoàn viên' }[cfg.user?.role || cfg.role] || 'Người dùng';
+  box.innerHTML = `
+    <div class="dvsec-header" style="background:linear-gradient(135deg,#059669,#10b981)">
+      <div class="dvsec-logo"><i class="fas fa-check"></i></div>
+      <div class="dvsec-title">Đăng nhập thành công!</div>
+      <div class="dvsec-sub">${roleLabel} · ${cfg.orgName || 'Hệ thống'}</div>
+    </div>
+    <div class="dvsec-body">
+      <div class="dvsec-success">
+        <div style="font-size:0.9rem;color:#475569">Đang tải dữ liệu...</div>
+        <div class="dvsec-progress" style="margin-top:16px">
+          <div class="dvsec-progress-bar"></div>
+        </div>
+      </div>
+    </div>`;
+
+  setTimeout(() => _dismissAndLaunch(cfg), 1600);
 }
 
-// Hash tương thích với DVAuth cũ
-function _legacyHash(pin) {
-  let h = 5381;
-  for (let i = 0; i < pin.length; i++) h = ((h << 5) + h) ^ pin.charCodeAt(i);
-  return (h >>> 0).toString(16).padStart(8, '0');
-}
-
-// ─── Bridge với các module cũ (DVAuth session) ───────────────────────
+// ─────────────────────────────────────────────────────────────────────
+//  BRIDGE VỚI MODULE CŨ
+// ─────────────────────────────────────────────────────────────────────
 function _bridgeLegacySession(cfg) {
-  // Tạo session cho DVAuth để các module cũ nhận ra đã login
   sessionStorage.setItem('doanvan_session', JSON.stringify({ ts: Date.now() }));
 
-  // Cập nhật DVAuth profile nếu cần
   if (typeof DVAuth !== 'undefined') {
-    const existingProfile = DVAuth.getProfile();
-    if (!existingProfile || existingProfile.username !== cfg.user?.username) {
-      // Tạo profile giả với thông tin từ MT config (KHÔNG tạo account mới)
-      const profile = {
+    const existing = DVAuth.getProfile();
+    if (!existing || existing.username !== cfg.user?.username) {
+      DVAuth.saveProfile({
         username:    cfg.user?.username || 'user',
         displayName: cfg.user?.displayName || 'Người dùng',
         pinHash:     cfg.user?.pinHash,
@@ -605,161 +687,257 @@ function _bridgeLegacySession(cfg) {
         syncConfig:  { spreadsheetId: cfg.spreadsheetId, serviceAccountJson: cfg.serviceAccountJson },
         lastSync:    null,
         deviceId:    cfg.user?.deviceId || 'secure',
-      };
-      DVAuth.saveProfile(profile);
+      });
     }
     DVAuth.startSession();
   }
 }
 
-// ─── Sau đăng nhập thành công ────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────
+//  SAU ĐĂNG NHẬP THÀNH CÔNG
+// ─────────────────────────────────────────────────────────────────────
 function _dismissAndLaunch(cfg) {
   document.getElementById('dvSecureAuth')?.remove();
+  clearInterval(_lockoutInterval);
 
-  // Cập nhật UI
   _renderSecureRoleBadge(cfg);
-  _applyRoleRestrictions(cfg.role);
+  _applyRoleRestrictions(cfg.user?.role || cfg.role);
 
-  // Cập nhật user chip
-  if (typeof _dvUpdateUserChip === 'function') {
-    setTimeout(() => _dvUpdateUserChip(), 100);
-  }
+  if (typeof _dvUpdateUserChip === 'function') setTimeout(() => _dvUpdateUserChip(), 100);
+  if (typeof mtUpdateUIAfterLogin === 'function') mtUpdateUIAfterLogin();
+  else if (typeof window._mtAfterLogin === 'function') window._mtAfterLogin();
 
-  // Trigger MT UI update
-  if (typeof mtUpdateUIAfterLogin === 'function') {
-    mtUpdateUIAfterLogin();
-  } else if (typeof window._mtAfterLogin === 'function') {
-    window._mtAfterLogin();
-  }
-
-  // Init sync
   if (typeof dvInitSync === 'function') dvInitSync();
-
-  // Auto pull từ GSheet
   if (cfg.spreadsheetId && typeof MTSync !== 'undefined') {
     setTimeout(() => MTSync.pullAll(() => {}).catch(() => {}), 2000);
   }
 
   if (typeof toast === 'function') {
-    const roleName = { admin: '⚙️ Admin', manager: '👔 Quản lý', member: '👤 Đoàn viên' }[cfg.role] || '👤';
-    toast(`${roleName} <strong>${cfg.user?.displayName || ''}</strong> — Đăng nhập thành công!`, 'success');
+    const roleEmoji = { admin: '⚙️', manager: '👔', member: '👤' }[cfg.user?.role || cfg.role] || '👤';
+    toast(`${roleEmoji} <strong>${cfg.user?.displayName || ''}</strong> — Đăng nhập thành công!`, 'success');
   }
 }
 
 // ─────────────────────────────────────────────────────────────────────
-//  PHÂN QUYỀN GIAO DIỆN THEO ROLE
+//  ĐỒNG HỒ ĐẾM NGƯỢC LOCKOUT
+// ─────────────────────────────────────────────────────────────────────
+function _startLockoutTimer() {
+  clearInterval(_lockoutInterval);
+  if (!AuthLock.isLocked()) return;
+
+  _lockoutInterval = setInterval(() => {
+    if (!document.getElementById('dvSecureAuth')) { clearInterval(_lockoutInterval); return; }
+    const rem = AuthLock.remainingSeconds();
+    if (rem <= 0) {
+      clearInterval(_lockoutInterval);
+      dvSecureShowLogin();
+      return;
+    }
+    const el = document.getElementById('dvSecLockTimer');
+    if (el) el.textContent = rem + 's';
+  }, 1000);
+}
+
+// ─────────────────────────────────────────────────────────────────────
+//  PHÂN QUYỀN GIAO DIỆN
 // ─────────────────────────────────────────────────────────────────────
 function _applyRoleRestrictions(role) {
   const isAdmin   = role === 'admin';
   const isManager = role === 'admin' || role === 'manager';
 
-  // Ẩn Admin nav với người không phải admin
   const adminNav = document.getElementById('mtAdminNav');
   if (adminNav) adminNav.style.display = isAdmin ? 'block' : 'none';
 
-  // Ẩn nút quản lý user
   const adminQuickBtn = document.getElementById('mtAdminQuickBtn');
   if (adminQuickBtn) adminQuickBtn.style.display = isAdmin ? 'inline-flex' : 'none';
 
-  // Ẩn toàn bộ tab "Người dùng & Mã mời" với non-admin
   document.querySelectorAll('[data-admin-only], .admin-only-nav').forEach(el => {
     el.style.display = isAdmin ? '' : 'none';
   });
 
-  // Người dùng thường: chỉ được cấu hình kết nối GS/AI cá nhân
-  // Các nút cấu hình hệ thống bị ẩn
   if (!isAdmin) {
-    // Ẩn các nút tạo invite code
-    document.querySelectorAll('[onclick*="mtShowInviteManager"], [onclick*="generateInviteCode"]').forEach(el => {
-      el.style.display = 'none';
-    });
-    // Ẩn các nút quản lý user system
-    document.querySelectorAll('[onclick*="mtChangeRole"], [onclick*="mtDeleteUser"]').forEach(el => {
-      el.style.display = 'none';
-    });
+    document.querySelectorAll('[onclick*="mtShowInviteManager"],[onclick*="generateInviteCode"]').forEach(el => el.style.display='none');
+    document.querySelectorAll('[onclick*="mtChangeRole"],[onclick*="mtDeleteUser"]').forEach(el => el.style.display='none');
   }
 
-  // Lưu role vào window để các module khác check
   window._dvCurrentRole = role;
   window._dvIsAdmin     = isAdmin;
   window._dvIsManager   = isManager;
 }
 
 // ─────────────────────────────────────────────────────────────────────
-//  BADGE HIỂN THỊ ROLE (góc dưới màn hình)
+//  BADGE ROLE
 // ─────────────────────────────────────────────────────────────────────
 function _renderSecureRoleBadge(cfg) {
   document.getElementById('dvSecureRoleBadge')?.remove();
   const roleMap = {
-    admin:   { label: 'Admin',    color: '#c0392b' },
-    manager: { label: 'Quản lý',  color: '#1a2340' },
+    admin:   { label: 'Admin',     color: '#c0392b' },
+    manager: { label: 'Quản lý',   color: '#1a2340' },
     member:  { label: 'Đoàn viên', color: '#16a34a' },
   };
-  const r = roleMap[cfg.role] || roleMap.member;
+  const r = roleMap[cfg.user?.role || cfg.role] || roleMap.member;
   const badge = document.createElement('div');
   badge.id = 'dvSecureRoleBadge';
+  badge.style.cssText = `
+    position:fixed; bottom:16px; left:50%; transform:translateX(-50%);
+    background:#1a2340; color:#fff; padding:7px 16px; border-radius:20px;
+    font-size:0.75rem; z-index:9998; display:flex; align-items:center; gap:8px;
+    box-shadow:0 4px 14px rgba(0,0,0,0.35); animation: dvsec-fadeIn 0.3s ease;
+    white-space:nowrap;
+  `;
   badge.innerHTML = `
-    <span class="role-dot" style="background:${r.color}"></span>
+    <span style="width:8px;height:8px;border-radius:50%;background:${r.color};display:inline-block"></span>
     ${r.label} · ${cfg.user?.displayName || 'Người dùng'}
-    <span style="opacity:0.6">· ${cfg.orgName || 'Hệ thống'}</span>`;
+    <span style="opacity:0.55">· ${cfg.orgName || 'Hệ thống'}</span>`;
   document.body.appendChild(badge);
-  setTimeout(() => { if (badge.parentNode) badge.remove(); }, 5000);
+  setTimeout(() => { if (badge.parentNode) badge.remove(); }, 4000);
 }
 
 // ─────────────────────────────────────────────────────────────────────
-//  ĐỒNG HỒ ĐẾM NGƯỢC LOCKOUT
+//  MÀN HÌNH: CÀI ĐẶT ADMIN
+//  ✅ FIX: Không đóng overlay gốc, mở modal TRÊN overlay
+//  ✅ FIX: Sau hoàn tất setup → tự render PIN login ngay
 // ─────────────────────────────────────────────────────────────────────
-let _lockoutInterval = null;
-function _startLockoutTimer() {
-  clearInterval(_lockoutInterval);
-  if (!AuthLock.isLocked()) return;
-
-  _lockoutInterval = setInterval(() => {
-    const timerEl = document.getElementById('dvSecLockTimer');
-    const keypad  = document.getElementById('dvSecKeypad');
-    const rem     = AuthLock.remainingSeconds();
-
-    if (rem <= 0) {
-      clearInterval(_lockoutInterval);
-      // Re-render màn hình đăng nhập bình thường
-      dvSecureShowLogin();
-      return;
-    }
-    if (timerEl) timerEl.textContent = rem + 's';
-    if (keypad)  keypad.style.pointerEvents = 'none';
-  }, 1000);
-}
-
-// ─────────────────────────────────────────────────────────────────────
-//  CÁC MÀN HÌNH PHỤ (Admin setup, Join with code, Sync code)
-// ─────────────────────────────────────────────────────────────────────
-
-/** Mở màn hình cài đặt Admin (gọi ra mtShowAdminSetup đã có) */
 window.dvSecureOpenAdminSetup = function() {
-  document.getElementById('dvSecureAuth')?.remove();
+  // KHÔNG remove dvSecureAuth — chỉ ẩn card để modal admin nổi lên trên
+  const box = document.getElementById('dvSecureBox');
+  if (box) box.style.display = 'none';
+
   if (typeof mtShowAdminSetup === 'function') {
+    // Hook vào callback hoàn tất setup để auto login
+    _hookAdminSetupComplete();
     mtShowAdminSetup();
   } else {
-    // Fallback nếu chưa load module
     alert('Vui lòng đợi tải xong trang rồi thử lại.');
+    if (box) box.style.display = '';
+  }
+};
+
+/**
+ * Hook vào mtDoAdminSetup để sau khi hoàn tất:
+ * 1. Đóng modal setup
+ * 2. Refresh appState
+ * 3. Hiển thị màn hình PIN đăng nhập
+ */
+function _hookAdminSetupComplete() {
+  const origMtDo = window.mtDoAdminSetup;
+  if (typeof origMtDo !== 'function') return;
+
+  window.mtDoAdminSetup = async function() {
+    await origMtDo.apply(this, arguments);
+    // Sau khi setup hoàn tất, mtDoAdminSetup sẽ lưu config
+    // Ta dùng MutationObserver để biết khi modal đóng
+    _waitForSetupModalClose();
+  };
+}
+
+function _waitForSetupModalClose() {
+  const modal = document.getElementById('mtAdminSetupModal');
+  if (!modal) {
+    _onAdminSetupDone();
+    return;
+  }
+  const observer = new MutationObserver(() => {
+    if (!document.getElementById('mtAdminSetupModal')) {
+      observer.disconnect();
+      _onAdminSetupDone();
+    }
+  });
+  observer.observe(document.body, { childList: true });
+}
+
+function _onAdminSetupDone() {
+  // Khôi phục mtDoAdminSetup gốc
+  const origMtDo = window._origMtDoAdminSetup;
+  if (origMtDo) window.mtDoAdminSetup = origMtDo;
+
+  _secAppState = _getAppState();
+  if (_secAppState.mode === 'MT_AUTH') {
+    // Có config hợp lệ → hiện màn hình PIN
     dvSecureShowLogin();
-  }
-};
-
-/** Mở màn hình tham gia bằng Mã mời */
-window.dvSecureOpenJoinWithCode = function() {
-  document.getElementById('dvSecureAuth')?.remove();
-  if (typeof mtShowJoinWithCode === 'function') {
-    mtShowJoinWithCode();
-  } else if (typeof window.mtShowInviteManager === 'function') {
-    dvSecureShowJoinUI();
   } else {
-    dvSecureShowJoinUI();
+    // Setup chưa hoàn tất → hiện lại màn hình no-setup
+    const auth = document.getElementById('dvSecureAuth');
+    if (auth) {
+      const box = document.getElementById('dvSecureBox');
+      if (box) box.style.display = '';
+    } else {
+      dvSecureShowLogin();
+    }
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+//  MÀN HÌNH: ĐỔI TÀI KHOẢN / ĐĂNG XUẤT
+// ─────────────────────────────────────────────────────────────────────
+window.dvSecureOpenSwitchAccount = function() {
+  _injectSecureCSS();
+  const box = document.getElementById('dvSecureBox');
+  if (!box) return;
+
+  box.innerHTML = `
+    <div class="dvsec-header" style="background:linear-gradient(135deg,#334155,#1a2340)">
+      <div class="dvsec-logo"><i class="fas fa-user-cog"></i></div>
+      <div class="dvsec-title">Tuỳ chọn tài khoản</div>
+      <div class="dvsec-sub">Chọn thao tác bạn muốn thực hiện</div>
+    </div>
+    <div class="dvsec-body">
+      <button class="dvsec-btn primary" onclick="dvSecureShowLogin()">
+        <i class="fas fa-arrow-left"></i>Quay lại đăng nhập
+      </button>
+      <button class="dvsec-btn ghost" onclick="dvSecureOpenSyncCode()">
+        <i class="fas fa-sync-alt"></i>Đăng nhập bằng Sync Code
+      </button>
+      <button class="dvsec-btn ghost" onclick="dvSecureOpenJoinWithCode()">
+        <i class="fas fa-ticket-alt"></i>Tham gia bằng Mã mời
+      </button>
+      <hr class="dvsec-divider">
+      <button class="dvsec-btn" style="background:#fff5f5;color:#c0392b;border:1px solid #fecaca"
+        onclick="dvSecureConfirmLogout()">
+        <i class="fas fa-trash-alt"></i>Xoá dữ liệu thiết bị này
+      </button>
+      <div class="dvsec-link-row" style="margin-top:6px;font-size:0.7rem;color:#94a3b8">
+        Xoá dữ liệu sẽ yêu cầu cài đặt lại hoặc dùng Sync Code
+      </div>
+    </div>`;
 };
 
-/** UI tham gia bằng Invite Code */
-window.dvSecureShowJoinUI = function() {
+window.dvSecureConfirmLogout = function() {
+  const box = document.getElementById('dvSecureBox');
+  if (!box) return;
+  box.innerHTML = `
+    <div class="dvsec-header" style="background:linear-gradient(135deg,#c0392b,#e74c3c)">
+      <div class="dvsec-logo"><i class="fas fa-exclamation-triangle"></i></div>
+      <div class="dvsec-title">Xác nhận xoá dữ liệu</div>
+      <div class="dvsec-sub">Thao tác này không thể hoàn tác</div>
+    </div>
+    <div class="dvsec-body">
+      <div class="dvsec-info-box" style="background:#fff5f5;border-color:#fecaca;color:#c0392b">
+        <i class="fas fa-exclamation-triangle"></i>
+        <strong> Cảnh báo:</strong> Xoá sẽ xoá toàn bộ cấu hình, session và dữ liệu cục bộ trên thiết bị này. Bạn sẽ cần Sync Code hoặc cài đặt lại để sử dụng.
+      </div>
+      <button class="dvsec-btn" style="background:#c0392b;color:#fff" onclick="_dvClearAndReset()">
+        <i class="fas fa-trash"></i>Xoá dữ liệu và reset
+      </button>
+      <button class="dvsec-btn ghost" onclick="dvSecureShowLogin()">
+        <i class="fas fa-times"></i>Huỷ
+      </button>
+    </div>`;
+};
+
+window._dvClearAndReset = function() {
+  SecureSession.end();
+  Object.values(KEYS).forEach(k => { try { localStorage.removeItem(k); sessionStorage.removeItem(k); } catch{} });
+  sessionStorage.removeItem('doanvan_session');
+  if (typeof toast === 'function') toast('Đã xoá dữ liệu thiết bị.', 'info');
+  setTimeout(() => dvSecureShowLogin(), 400);
+};
+
+// ─────────────────────────────────────────────────────────────────────
+//  MÀN HÌNH: THAM GIA BẰNG MÃ MỜI
+//  ✅ FIX: Sau join xong → hiện PIN login ngay thay vì dvSecureShowLogin trắng
+// ─────────────────────────────────────────────────────────────────────
+window.dvSecureOpenJoinWithCode = function() {
   _injectSecureCSS();
   document.getElementById('dvSecureAuth')?.remove();
 
@@ -772,42 +950,46 @@ window.dvSecureShowJoinUI = function() {
       <div class="dvsec-title">Tham gia hệ thống</div>
       <div class="dvsec-sub">Nhập Mã mời từ Admin</div>
     </div>
-    <div class="dvsec-body">
-      <div style="margin-bottom:14px">
-        <label style="font-size:0.8rem;font-weight:600;color:#475569;margin-bottom:6px;display:block">
-          <i class="fas fa-ticket-alt" style="color:#c0392b;margin-right:5px"></i>Mã mời
+    <div class="dvsec-body scroll">
+      <div class="dvsec-form-group">
+        <label class="dvsec-form-label">
+          <i class="fas fa-ticket-alt" style="color:#c0392b;margin-right:4px"></i>Mã mời
         </label>
-        <input class="form-control" id="dvSecInviteCode"
-          placeholder="Nhập mã mời từ Admin"
-          style="text-align:center;font-family:monospace;font-size:1.1rem;letter-spacing:4px;text-transform:uppercase"
+        <input class="dvsec-form-control" id="dvSecInviteCode"
+          placeholder="VD: D6DTXGAYT8"
+          style="text-align:center;font-family:monospace;font-size:1.15rem;letter-spacing:5px;text-transform:uppercase"
           maxlength="16"
           oninput="this.value=this.value.toUpperCase().replace(/[^A-Z0-9]/g,'')">
       </div>
-      <div style="margin-bottom:14px">
-        <label style="font-size:0.8rem;font-weight:600;color:#475569;margin-bottom:6px;display:block">
-          <i class="fas fa-user" style="color:#1a2340;margin-right:5px"></i>Tên hiển thị
+      <div class="dvsec-form-group">
+        <label class="dvsec-form-label">
+          <i class="fas fa-user" style="color:#1a2340;margin-right:4px"></i>Tên hiển thị
         </label>
-        <input class="form-control" id="dvSecJoinName" placeholder="Họ và tên của bạn">
+        <input class="dvsec-form-control" id="dvSecJoinName" placeholder="Họ và tên của bạn">
       </div>
-      <div style="margin-bottom:14px">
-        <label style="font-size:0.8rem;font-weight:600;color:#475569;margin-bottom:6px;display:block">
-          <i class="fas fa-lock" style="color:#1a2340;margin-right:5px"></i>Tạo mã PIN (6 số)
+      <div class="dvsec-form-group">
+        <label class="dvsec-form-label">
+          <i class="fas fa-lock" style="color:#1a2340;margin-right:4px"></i>Tạo mã PIN (6 số)
         </label>
-        <input type="password" class="form-control" id="dvSecJoinPIN"
-          placeholder="6 chữ số" maxlength="6" inputmode="numeric"
+        <input type="password" class="dvsec-form-control" id="dvSecJoinPIN"
+          placeholder="● ● ● ● ● ●" maxlength="6" inputmode="numeric"
+          style="letter-spacing:8px;font-size:1.2rem;text-align:center"
           oninput="this.value=this.value.replace(/[^0-9]/g,'')">
       </div>
-      <div style="margin-bottom:16px">
-        <label style="font-size:0.8rem;font-weight:600;color:#475569;margin-bottom:6px;display:block">
-          <i class="fas fa-lock" style="color:#1a2340;margin-right:5px"></i>Xác nhận PIN
+      <div class="dvsec-form-group">
+        <label class="dvsec-form-label">
+          <i class="fas fa-lock" style="color:#1a2340;margin-right:4px"></i>Xác nhận PIN
         </label>
-        <input type="password" class="form-control" id="dvSecJoinPIN2"
-          placeholder="Nhập lại PIN" maxlength="6" inputmode="numeric"
+        <input type="password" class="dvsec-form-control" id="dvSecJoinPIN2"
+          placeholder="● ● ● ● ● ●" maxlength="6" inputmode="numeric"
+          style="letter-spacing:8px;font-size:1.2rem;text-align:center"
           oninput="this.value=this.value.replace(/[^0-9]/g,'')">
       </div>
-      <div class="dvsec-error" id="dvSecJoinError" style="margin-bottom:8px"></div>
-      <button class="dvsec-btn primary" onclick="dvSecureDoJoin()">
-        <i class="fas fa-sign-in-alt" style="margin-right:8px"></i>Tham gia
+
+      <div id="dvSecJoinError" style="font-size:0.78rem;min-height:18px;margin-bottom:10px;text-align:center"></div>
+
+      <button class="dvsec-btn primary" id="dvSecJoinBtn" onclick="dvSecureDoJoin()">
+        <i class="fas fa-sign-in-alt"></i>Tham gia
       </button>
       <div class="dvsec-link-row">
         <a onclick="dvSecureShowLogin()">← Quay lại đăng nhập</a>
@@ -817,186 +999,332 @@ window.dvSecureShowJoinUI = function() {
   document.body.appendChild(overlay);
 };
 
-/** Thực hiện join */
 window.dvSecureDoJoin = async function() {
   const code  = document.getElementById('dvSecInviteCode')?.value.trim().toUpperCase();
   const name  = document.getElementById('dvSecJoinName')?.value.trim();
   const pin   = document.getElementById('dvSecJoinPIN')?.value.trim();
   const pin2  = document.getElementById('dvSecJoinPIN2')?.value.trim();
   const errEl = document.getElementById('dvSecJoinError');
+  const btn   = document.getElementById('dvSecJoinBtn');
 
-  if (!code || code.length < 6) { errEl.textContent = 'Vui lòng nhập Mã mời'; return; }
-  if (!name)                     { errEl.textContent = 'Vui lòng nhập tên hiển thị'; return; }
-  if (!pin || pin.length !== 6 || !/^\d{6}$/.test(pin)) {
-    errEl.textContent = 'PIN phải là 6 chữ số'; return;
-  }
-  if (pin !== pin2) { errEl.textContent = 'Xác nhận PIN không khớp'; return; }
+  const setErr = (msg) => {
+    if (errEl) errEl.innerHTML = `<span style="color:#c0392b"><i class="fas fa-exclamation-circle"></i> ${msg}</span>`;
+  };
 
-  errEl.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Đang xác thực mã mời...';
+  if (!code || code.length < 6)         { setErr('Vui lòng nhập Mã mời hợp lệ'); return; }
+  if (!name)                             { setErr('Vui lòng nhập tên hiển thị'); return; }
+  if (!pin || pin.length !== 6 || !/^\d{6}$/.test(pin)) { setErr('PIN phải là đúng 6 chữ số'); return; }
+  if (pin !== pin2)                      { setErr('Xác nhận PIN không khớp'); return; }
+
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Đang xác thực...'; }
+  if (errEl) errEl.innerHTML = '';
 
   try {
     if (typeof MTAuth === 'undefined') throw new Error('Module chưa sẵn sàng. Tải lại trang.');
-    const cfg = await MTAuth.joinWithCode(code, null, name, pin);
-    errEl.innerHTML = '<span style="color:#16a34a"><i class="fas fa-check-circle"></i> Tham gia thành công!</span>';
-    setTimeout(() => dvSecureShowLogin(), 1000);
-  } catch(err) {
-    errEl.innerHTML = `<span style="color:#dc2626"><i class="fas fa-times-circle"></i> ${err.message}</span>`;
-  }
-};
+    await MTAuth.joinWithCode(code, null, name, pin);
 
-/** Mở Sync Code input */
-window.dvSecureOpenSyncCode = function() {
-  document.getElementById('dvSecureAuth')?.remove();
-  if (typeof dvShowSyncCodeInput === 'function') {
-    dvShowSyncCodeInput();
-    // Sau khi sync code thành công → callback về dvSecureShowLogin
-    const origDismiss = window._dvDismissAuthAndInit;
-    window._dvDismissAuthAndInit = function() {
-      document.getElementById('dvAuthModal')?.remove();
+    if (errEl) errEl.innerHTML = '<span style="color:#16a34a"><i class="fas fa-check-circle"></i> Tham gia thành công! Đang chuyển đến đăng nhập...</span>';
+    setTimeout(() => {
       _secAppState = _getAppState();
-      if (_secAppState.mode === 'MT_AUTH') {
-        const cfg = (() => {
-          try { return JSON.parse(localStorage.getItem(KEYS.MT_CONFIG) || 'null'); } catch { return null; }
-        })();
-        if (cfg) {
-          SecureSession.start(cfg.role, cfg.user?.username, cfg.orgId);
-          _bridgeLegacySession(cfg);
-          _dismissAndLaunch(cfg);
-          return;
-        }
-      }
-      if (origDismiss) origDismiss();
-    };
-  } else {
-    alert('Module Sync Code chưa sẵn sàng.');
-    dvSecureShowLogin();
+      dvSecureShowLogin();
+    }, 1200);
+  } catch(err) {
+    setErr(err.message || 'Lỗi không xác định. Thử lại.');
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-sign-in-alt"></i> Tham gia'; }
   }
 };
 
 // ─────────────────────────────────────────────────────────────────────
-//  ĐĂNG XUẤT AN TOÀN
+//  MÀN HÌNH: SYNC CODE
+//  ✅ FIX: Dùng dvSecureAuth overlay thay vì dvAuthModal cũ
+//  ✅ FIX: Sau sync thành công → tự đăng nhập PIN
+// ─────────────────────────────────────────────────────────────────────
+window.dvSecureOpenSyncCode = function() {
+  _injectSecureCSS();
+  document.getElementById('dvSecureAuth')?.remove();
+
+  const overlay = document.createElement('div');
+  overlay.id = 'dvSecureAuth';
+  overlay.innerHTML = `
+  <div id="dvSecureBox">
+    <div class="dvsec-header" style="background:linear-gradient(145deg,#1a2340,#0284c7)">
+      <div class="dvsec-logo"><i class="fas fa-sync-alt"></i></div>
+      <div class="dvsec-title">Đăng nhập bằng Sync Code</div>
+      <div class="dvsec-sub">Nhập code từ thiết bị PC của bạn</div>
+    </div>
+    <div class="dvsec-body">
+      <div class="dvsec-form-group">
+        <label class="dvsec-form-label">Sync Code</label>
+        <input class="dvsec-form-control" id="dvSecSyncCode"
+          placeholder="VD: AB12CD34"
+          style="letter-spacing:6px;font-family:monospace;font-size:1.4rem;text-align:center;text-transform:uppercase"
+          maxlength="20"
+          oninput="this.value=this.value.toUpperCase().replace(/[^A-Z0-9]/g,'');_dvSyncCodeHint(this.value)">
+        <div id="dvSecSyncHint" style="font-size:0.73rem;margin-top:5px;min-height:16px;color:#94a3b8"></div>
+      </div>
+
+      <!-- Ô Sheet ID — ẩn theo mặc định, hiện khi cần -->
+      <div id="dvSecSyncSheetRow" style="display:none;margin-bottom:12px">
+        <div style="font-size:0.73rem;color:#d97706;margin-bottom:4px">
+          <i class="fas fa-exclamation-triangle"></i>
+          Thiết bị mới — vui lòng nhập Spreadsheet ID:
+        </div>
+        <input class="dvsec-form-control" id="dvSecSyncSheetId"
+          placeholder="Dán Spreadsheet ID từ Admin..."
+          style="font-family:monospace;font-size:0.8rem">
+      </div>
+
+      <div id="dvSecSyncResult" style="font-size:0.78rem;min-height:18px;margin-bottom:10px;text-align:center"></div>
+
+      <button class="dvsec-btn primary" id="dvSecSyncBtn" onclick="dvSecureApplySync()">
+        <i class="fas fa-link"></i>Kết nối
+      </button>
+      <div class="dvsec-link-row">
+        <a onclick="dvSecureShowLogin()">← Quay lại đăng nhập</a>
+      </div>
+    </div>
+  </div>`;
+  document.body.appendChild(overlay);
+};
+
+window._dvSyncCodeHint = function(val) {
+  const hint = document.getElementById('dvSecSyncHint');
+  const sheetRow = document.getElementById('dvSecSyncSheetRow');
+  if (!hint || val.length < 6) { if (hint) hint.innerHTML = ''; return; }
+
+  const hasLocal = !!localStorage.getItem('dv_sync_code_' + val)
+                || !!localStorage.getItem('mt_deep_' + val)
+                || !!localStorage.getItem('mt_invite_' + val);
+  const hasMTConfig = !!(typeof MTConfig !== 'undefined' && MTConfig.get()?.spreadsheetId);
+
+  if (hasLocal) {
+    hint.innerHTML = '<span style="color:#16a34a"><i class="fas fa-check-circle"></i> Tìm thấy — sẵn sàng kết nối</span>';
+    if (sheetRow) sheetRow.style.display = 'none';
+  } else if (hasMTConfig) {
+    hint.innerHTML = '<span style="color:#0284c7"><i class="fas fa-cloud"></i> Sẽ kiểm tra từ Google Sheet...</span>';
+    if (sheetRow) sheetRow.style.display = 'none';
+  } else {
+    hint.innerHTML = '<span style="color:#d97706"><i class="fas fa-info-circle"></i> Thiết bị mới — cần Spreadsheet ID</span>';
+    if (sheetRow) sheetRow.style.display = 'block';
+  }
+};
+
+window.dvSecureApplySync = async function() {
+  const code     = document.getElementById('dvSecSyncCode')?.value.trim().toUpperCase().replace(/\s/g,'');
+  const sidInput = document.getElementById('dvSecSyncSheetId')?.value.trim();
+  const resEl    = document.getElementById('dvSecSyncResult');
+  const btn      = document.getElementById('dvSecSyncBtn');
+
+  const setRes = (html) => { if (resEl) resEl.innerHTML = html; };
+
+  if (!code || code.length < 6) {
+    setRes('<span style="color:#c0392b">Vui lòng nhập Sync Code hợp lệ</span>'); return;
+  }
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Đang xác thực...'; }
+  setRes('<i class="fas fa-spinner fa-spin" style="color:#0284c7"></i> Đang xác thực...');
+
+  // Delegate sang dvAuthUpgrade nếu có
+  if (typeof dvAuthUpgrade_applySync === 'function') {
+    // Tạm thời swap về overlay cũ để reuse logic
+    const codeEl  = { value: code };
+    const sheetEl = { value: sidInput };
+    // Override các element ID để hàm cũ đọc đúng
+    const origGet = document.getElementById.bind(document);
+    // Gọi trực tiếp logic
+    await _dvApplySyncLogic(code, sidInput, resEl, btn);
+    return;
+  }
+  await _dvApplySyncLogic(code, sidInput, resEl, btn);
+};
+
+async function _dvApplySyncLogic(code, sidInput, resEl, btn) {
+  const setRes = (html) => { if (resEl) resEl.innerHTML = html; };
+  let syncConfig = null, mtConfig = null;
+
+  // Strategy 1: localStorage
+  for (const prefix of ['dv_sync_code_', 'mt_invite_', 'mt_deep_']) {
+    const raw = localStorage.getItem(prefix + code);
+    if (!raw) continue;
+    try {
+      const p = JSON.parse(raw);
+      if (prefix === 'dv_sync_code_') {
+        if (Date.now() <= (p.expiry || Infinity)) {
+          const payload = JSON.parse(p.payload);
+          syncConfig = payload.syncConfig; mtConfig = payload.mtConfig;
+        }
+      } else if (prefix === 'mt_invite_') {
+        if (!p.expiry || Date.now() < p.expiry) {
+          syncConfig = { serviceAccountJson: p.serviceAccountJson, spreadsheetId: p.spreadsheetId, autoSync: true };
+          mtConfig   = { spreadsheetId: p.spreadsheetId, serviceAccountJson: p.serviceAccountJson, role: p.role, orgId: p.orgId, orgName: p.orgName };
+        }
+      } else {
+        if (!p.exp || Date.now() < p.exp) {
+          syncConfig = { serviceAccountJson: p.sa, spreadsheetId: p.sid, autoSync: true };
+          mtConfig   = { spreadsheetId: p.sid, serviceAccountJson: p.sa, role: p.r, orgId: p.o, orgName: p.on };
+        }
+      }
+      if (syncConfig) break;
+    } catch {}
+  }
+
+  // Strategy 2: GSheet
+  if (!syncConfig) {
+    setRes('<i class="fas fa-spinner fa-spin" style="color:#0284c7"></i> Đang tải từ Google Sheet...');
+    try {
+      const existCfg = (typeof GSheetSync !== 'undefined' && GSheetSync.getSyncConfig()) || null;
+      const existMT  = (typeof MTConfig !== 'undefined' && MTConfig.get()) || null;
+      const saJson   = existCfg?.serviceAccountJson || existMT?.serviceAccountJson;
+      const sid      = sidInput || existCfg?.spreadsheetId || existMT?.spreadsheetId;
+
+      if (!sid) throw new Error('no_sid');
+      if (!saJson) throw new Error('no_sa');
+
+      const token = (typeof MTToken !== 'undefined') ? await MTToken.get(saJson) : null;
+      if (!token) throw new Error('no_token');
+
+      const resp = await fetch(
+        `https://sheets.googleapis.com/v4/spreadsheets/${sid}/values/${encodeURIComponent('system_meta!A:B')}`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      if (!resp.ok) throw new Error('sheet_' + resp.status);
+      const data  = await resp.json();
+      const rows  = data.values || [];
+      const found = rows.find(r => r[0] === 'synccode_' + code || r[0] === 'invite_' + code);
+      if (!found) throw new Error('not_found');
+
+      const entry = JSON.parse(found[1]);
+      if (entry.expiry && Date.now() > entry.expiry) throw new Error('expired');
+
+      if (found[0].startsWith('synccode_')) {
+        const parsed = JSON.parse(entry.payload);
+        syncConfig = parsed.syncConfig; mtConfig = parsed.mtConfig;
+      } else {
+        syncConfig = { serviceAccountJson: entry.serviceAccountJson, spreadsheetId: entry.spreadsheetId, autoSync: true };
+        mtConfig   = { spreadsheetId: entry.spreadsheetId, serviceAccountJson: entry.serviceAccountJson, role: entry.role, orgId: entry.orgId, orgName: entry.orgName };
+      }
+    } catch(e) {
+      const m = e.message;
+      const msgMap = {
+        'not_found': 'Code không hợp lệ hoặc chưa tồn tại.',
+        'expired':   'Code đã hết hạn (>24h). Hãy tạo code mới từ PC.',
+        'no_sid':    'Cần nhập Spreadsheet ID. Mở rộng ô phía trên.',
+        'no_sa':     'Thiết bị chưa được cấu hình SA. Liên hệ Admin.',
+        'no_token':  'Không lấy được token xác thực. Liên hệ Admin.',
+      };
+      const msg = msgMap[m] || `Lỗi kết nối: ${m}`;
+      setRes(`<span style="color:#c0392b"><i class="fas fa-times-circle"></i> ${msg}</span>`);
+      if (m === 'no_sid') document.getElementById('dvSecSyncSheetRow').style.display = 'block';
+      if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-link"></i> Kết nối'; }
+      return;
+    }
+  }
+
+  // Áp dụng config
+  try {
+    if (syncConfig && typeof GSheetSync !== 'undefined') GSheetSync.saveSyncConfig(syncConfig);
+    if (mtConfig && typeof MTConfig !== 'undefined') {
+      const exist = MTConfig.get() || {};
+      MTConfig.save({ ...exist, ...mtConfig, joinedAt: new Date().toISOString() });
+    }
+
+    setRes('<span style="color:#16a34a"><i class="fas fa-check-circle"></i> Kết nối thành công! Đang đăng nhập...</span>');
+
+    setTimeout(() => {
+      _secAppState = _getAppState();
+      if (_secAppState.mode === 'MT_AUTH') {
+        const cfg = (() => { try { return JSON.parse(localStorage.getItem(KEYS.MT_CONFIG) || 'null'); } catch { return null; } })();
+        if (cfg) {
+          SecureSession.start(cfg.user?.role || cfg.role, cfg.user?.username, cfg.orgId);
+          _bridgeLegacySession(cfg);
+          _showLoginSuccess(cfg);
+          return;
+        }
+      }
+      dvSecureShowLogin();
+    }, 1000);
+
+    if (typeof dvSyncNow === 'function') setTimeout(() => dvSyncNow('pull'), 2200);
+  } catch(e) {
+    setRes(`<span style="color:#c0392b">Lỗi áp dụng: ${e.message}</span>`);
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-link"></i> Kết nối'; }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+//  ĐĂNG XUẤT
 // ─────────────────────────────────────────────────────────────────────
 window.dvSecureLogout = function() {
   SecureSession.end();
   sessionStorage.removeItem('doanvan_session');
-
-  // Reset role restrictions
   window._dvCurrentRole = null;
   window._dvIsAdmin     = false;
   window._dvIsManager   = false;
-
   document.getElementById('dvSecureRoleBadge')?.remove();
-
-  // Gọi dvLogout nếu có
-  if (typeof dvLogout === 'function') {
-    // DVAuth logout đã xử lý session
-  }
-
-  if (typeof toast === 'function') {
-    toast('<i class="fas fa-sign-out-alt"></i> Đã đăng xuất', 'info');
-  }
-
+  if (typeof toast === 'function') toast('<i class="fas fa-sign-out-alt"></i> Đã đăng xuất', 'info');
   setTimeout(() => dvSecureShowLogin(), 400);
 };
+window.dvLogout = window.dvSecureLogout;
 
 // ─────────────────────────────────────────────────────────────────────
-//  GUARD: CHẶN TRUY CẬP TRÁI PHÉP TRONG LÚC CHẠY
+//  GUARDS
 // ─────────────────────────────────────────────────────────────────────
-/** Kiểm tra quyền admin — dùng cho các hàm nhạy cảm */
 window.dvSecureRequireAdmin = function(actionName) {
   if (!SecureSession.isAdmin()) {
-    if (typeof toast === 'function') {
-      toast(`<i class="fas fa-ban"></i> Bạn không có quyền Admin để thực hiện: <strong>${actionName || 'hành động này'}</strong>`, 'error');
-    }
+    if (typeof toast === 'function')
+      toast(`<i class="fas fa-ban"></i> Bạn cần quyền Admin để thực hiện: <strong>${actionName || 'hành động này'}</strong>`, 'error');
     return false;
   }
   return true;
 };
-
-/** Kiểm tra đã đăng nhập */
-window.dvSecureIsLoggedIn = function() {
-  return SecureSession.isValid();
-};
-
-window.dvSecureGetRole = function() {
-  return SecureSession.getRole();
-};
+window.dvSecureIsLoggedIn = () => SecureSession.isValid();
+window.dvSecureGetRole    = () => SecureSession.getRole();
 
 // ─────────────────────────────────────────────────────────────────────
 //  VÔ HIỆU HOÁ CÁC LỖ HỔNG CŨ
 // ─────────────────────────────────────────────────────────────────────
 function _patchLegacyVulnerabilities() {
-  // [1] Chặn dvResetToDefault — lỗ hổng nghiêm trọng nhất
-  //     Cũ: bất kỳ ai cũng có thể reset PIN về 123456 và đăng nhập ngay
   window.dvResetToDefault = function() {
-    if (typeof toast === 'function') {
-      toast('<i class="fas fa-ban"></i> Tính năng "Reset mặc định" đã bị vô hiệu hoá vì lý do bảo mật. Liên hệ Admin để được hỗ trợ.', 'error');
-    }
+    if (typeof toast === 'function')
+      toast('<i class="fas fa-ban"></i> "Reset mặc định" đã bị vô hiệu hoá vì lý do bảo mật.', 'error');
   };
 
-  // [2] Chặn dvSeedDefaultAccount — không tự tạo tài khoản mặc định nữa
-  window.dvSeedDefaultAccount = function() {
-    // NOP: chỉ tạo khi có MT config hợp lệ từ Admin
-  };
+  window.dvSeedDefaultAccount = function() { /* NOP */ };
 
-  // [3] Override DVAuth.isLoggedIn để luôn tham chiếu SecureSession
   if (typeof DVAuth !== 'undefined') {
-    const origIsLoggedIn = DVAuth.isLoggedIn.bind(DVAuth);
-    DVAuth.isLoggedIn = function() {
-      return SecureSession.isValid() || origIsLoggedIn();
-    };
-  }
+    const origLoggedIn = DVAuth.isLoggedIn.bind(DVAuth);
+    DVAuth.isLoggedIn = () => SecureSession.isValid() || origLoggedIn();
 
-  // [4] Chặn tạo tài khoản trực tiếp qua DVAuth.createAccount nếu không phải setup
-  if (typeof DVAuth !== 'undefined') {
     const origCreate = DVAuth.createAccount.bind(DVAuth);
     DVAuth.createAccount = function(username, pin) {
-      // Chỉ cho phép tạo từ context hợp lệ (joinWithCode)
       const stack = new Error().stack || '';
-      const isFromJoin = stack.includes('dvSecureDoJoin') || stack.includes('joinWithCode') || stack.includes('dvResetToDefault_DISABLED');
-      if (!isFromJoin && !SecureSession.isAdmin()) {
-        console.warn('[AuthSecure] Blocked unauthorized DVAuth.createAccount call');
-        return null;
-      }
+      const ok = stack.includes('dvSecureDoJoin') || stack.includes('joinWithCode') || SecureSession.isAdmin();
+      if (!ok) { console.warn('[AuthSecure] Blocked DVAuth.createAccount'); return null; }
       return origCreate(username, pin);
     };
   }
 
-  // [5] Override dvShowAuthModal cũ → redirect về secure login
-  window.dvShowAuthModal = function(mode) {
-    if (mode === 'setup') {
-      // Cho phép setup qua secure UI
-      dvSecureShowLogin();
-    } else {
-      dvSecureShowLogin();
-    }
-  };
+  window.dvShowAuthModal = function() { dvSecureShowLogin(); };
 
-  // [6] Patch mtShowInviteManager để check admin
-  const origMtShowInvite = window.mtShowInviteManager;
-  if (typeof origMtShowInvite === 'function') {
+  const origInvite = window.mtShowInviteManager;
+  if (typeof origInvite === 'function') {
     window.mtShowInviteManager = function() {
       if (!dvSecureRequireAdmin('Quản lý người dùng')) return;
-      origMtShowInvite();
+      origInvite();
     };
   }
 
-  // [7] Patch mtShowAdminSetup — chỉ chạy khi chưa setup HOẶC đang là admin
-  const origMtShowAdmin = window.mtShowAdminSetup;
-  if (typeof origMtShowAdmin === 'function') {
+  const origAdminSetup = window.mtShowAdminSetup;
+  if (typeof origAdminSetup === 'function') {
+    // Lưu gốc để hook có thể restore
+    window._origMtDoAdminSetup = origAdminSetup;
     window.mtShowAdminSetup = function() {
-      const cfg = (() => {
-        try { return JSON.parse(localStorage.getItem(KEYS.MT_CONFIG) || 'null'); } catch { return null; }
-      })();
-      const isSetupDone = !!(cfg?.spreadsheetId && cfg?.user);
-
-      if (isSetupDone && !SecureSession.isAdmin()) {
-        if (typeof toast === 'function') {
-          toast('<i class="fas fa-ban"></i> Chỉ Admin mới có thể truy cập cài đặt hệ thống.', 'error');
-        }
+      const cfg       = (() => { try { return JSON.parse(localStorage.getItem(KEYS.MT_CONFIG) || 'null'); } catch { return null; } })();
+      const setupDone = !!(cfg?.spreadsheetId && cfg?.user);
+      if (setupDone && !SecureSession.isAdmin()) {
+        if (typeof toast === 'function') toast('<i class="fas fa-ban"></i> Chỉ Admin mới có thể truy cập cài đặt hệ thống.', 'error');
         return;
       }
-      origMtShowAdmin();
+      origAdminSetup();
     };
   }
 }
@@ -1006,52 +1334,29 @@ function _patchLegacyVulnerabilities() {
 // ─────────────────────────────────────────────────────────────────────
 function _checkSessionOnLoad() {
   const sess = SecureSession.get();
-  if (sess) {
-    // Vẫn còn session hợp lệ → không cần đăng nhập lại
-    const cfg = (() => {
-      try { return JSON.parse(localStorage.getItem(KEYS.MT_CONFIG) || 'null'); } catch { return null; }
-    })();
-    if (cfg) {
-      _applyRoleRestrictions(sess.role);
-      // Cập nhật bridge
-      _bridgeLegacySession(cfg);
-      if (typeof mtUpdateUIAfterLogin === 'function') {
-        setTimeout(() => mtUpdateUIAfterLogin(), 200);
-      }
-      if (typeof _dvUpdateUserChip === 'function') {
-        setTimeout(() => _dvUpdateUserChip(), 200);
-      }
-      return true; // Đã đăng nhập
-    }
-  }
-  return false; // Chưa đăng nhập
+  if (!sess) return false;
+  const cfg = (() => { try { return JSON.parse(localStorage.getItem(KEYS.MT_CONFIG) || 'null'); } catch { return null; } })();
+  if (!cfg) return false;
+  _applyRoleRestrictions(sess.role);
+  _bridgeLegacySession(cfg);
+  if (typeof mtUpdateUIAfterLogin === 'function') setTimeout(() => mtUpdateUIAfterLogin(), 200);
+  if (typeof _dvUpdateUserChip === 'function') setTimeout(() => _dvUpdateUserChip(), 200);
+  return true;
 }
 
 // ─────────────────────────────────────────────────────────────────────
-//  KHỞI CHẠY HỆ THỐNG AUTH MỚI
+//  KHỞI CHẠY
 // ─────────────────────────────────────────────────────────────────────
 function dvSecureInit() {
-  // Vá các lỗ hổng cũ trước
   _patchLegacyVulnerabilities();
 
-  // Chặn luồng dvInit cũ không cho chạy lại sau khi ta đã control
-  // (dvInit cũ sẽ tự gọi dvSeedDefaultAccount và dvShowAuthModal)
-  // Ta đã override dvShowAuthModal ở trên nên nó sẽ dẫn về UI mới
-
-  // Kiểm tra session hiện tại
-  if (_checkSessionOnLoad()) {
-    // Đã có session → xoá auth modal cũ nếu còn
-    document.getElementById('dvAuthModal')?.remove();
-    return;
-  }
-
-  // Chưa có session → hiển thị secure login
-  // Xoá modal cũ nếu đang hiển thị
   document.getElementById('dvAuthModal')?.remove();
+
+  if (_checkSessionOnLoad()) return;
+
   dvSecureShowLogin();
 }
 
-// Auto-init sau khi tất cả scripts đã load
 if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', () => setTimeout(dvSecureInit, 500));
 } else {
@@ -1063,18 +1368,6 @@ if (document.readyState === 'loading') {
 // ─────────────────────────────────────────────────────────────────────
 window.dvSecureShowLogin        = dvSecureShowLogin;
 window.dvSecureInit             = dvSecureInit;
-window.dvSecureLogout           = window.dvSecureLogout;
-window.dvSecureRequireAdmin     = window.dvSecureRequireAdmin;
-window.dvSecureIsLoggedIn       = window.dvSecureIsLoggedIn;
-window.dvSecureGetRole          = window.dvSecureGetRole;
-window.dvSecureOpenAdminSetup   = window.dvSecureOpenAdminSetup;
-window.dvSecureOpenJoinWithCode = window.dvSecureOpenJoinWithCode;
-window.dvSecureOpenSyncCode     = window.dvSecureOpenSyncCode;
 window.SecureSession            = SecureSession;
-
-// Override dvLogout để dẫn về dvSecureLogout
-window.dvLogout = function() {
-  dvSecureLogout();
-};
 
 console.info(`[ĐoànVăn Auth Secure v${AUTH_SECURE_VERSION}] ✅ Đã tải — Bảo mật đăng nhập được kích hoạt`);
