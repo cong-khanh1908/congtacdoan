@@ -764,6 +764,10 @@ tr:hover .doc-row-actions { opacity: 1; }
 }
 </style>
 <script src="doanvan-ai-engine.js"></script>
+<script src="doanvan-ai-engine-v2.js"></script>
+<script src="doanvan-auth-upgrade.js"></script>
+<script src="doanvan-role-org-upgrade.js"></script>
+<script src="doanvan-prompt-upgrade.js"></script>
 <script src="doanvan-export-module.js"></script>
 <script src="doanvan-mobile-sync.js"></script>
 <script src="doanvan-multitenant.js"></script>
@@ -1913,8 +1917,8 @@ tr:hover .doc-row-actions { opacity: 1; }
               <div style="font-size:0.8rem;color:var(--text-soft);line-height:1.9">
                 <div><strong>ĐoànVăn</strong> — Hệ thống quản lý văn bản Đoàn TNCS HCM</div>
                 <div>Phiên bản: <strong>5.0.0 Multi-Tenant</strong></div>
-                <div>AI Engine: <strong>doanvan-ai-engine.js v5.0</strong></div>
-                <div>Sync: <strong>doanvan-multitenant.js v1.0</strong> · Google Sheets API v4</div>
+                <div>AI Engine: <strong>doanvan-ai-engine.js v5.0 + v2.0 patch (merged)</strong></div>
+                <div>Modules: <strong>auth-upgrade · role-org-upgrade · prompt-upgrade · export · mobile-sync · multitenant</strong></div>
                 <div>Models: Gemini 2.5 Flash-Lite · Flash · 2.0 Flash · Offline NLP (18 tools)</div>
                 <div style="margin-top:8px;padding:8px;background:rgba(192,57,43,0.05);border-radius:6px;font-size:0.74rem;color:var(--gray)">
                   Hỗ trợ đa người dùng, nhiều cơ sở Đoàn, đồng bộ PC ↔ Mobile qua Google Sheets trung tâm.
@@ -3047,6 +3051,7 @@ function loadSettings() {
   if(settings.orgAddress) document.getElementById('orgAddress').value = settings.orgAddress;
   updateAiStatus();
   setTimeout(refreshAiStatus, 300);
+  // Só gọi updateQuotaDisplay sau khi DOM sẵn sàng; defensive check trong hàm đó
   setTimeout(updateQuotaDisplay, 500);
 }
 
@@ -3113,7 +3118,7 @@ async function testApiKey() {
 
   // Test Flash-Lite first
   try {
-    if(window.AI) {
+    if(window.AI && typeof window.AI.testKey === 'function') {
       const models = [
         {id:'gemini-2.5-flash-lite',              label:'Flash-Lite (GA)'},
         {id:'gemini-2.5-flash-lite-preview-06-17', label:'Flash-Lite Preview'},
@@ -3147,7 +3152,9 @@ async function testApiKey() {
 function updateQuotaDisplay() {
   const el = document.getElementById('quotaDisplay');
   if(!el) return;
-  if(!window.AI) { el.innerHTML = '<span style="font-size:0.78rem;color:var(--gray)">AI Engine chưa tải</span>'; return; }
+  if(!window.AI || typeof window.AI.getQuotaStatus !== 'function') {
+    el.innerHTML = '<span style="font-size:0.78rem;color:var(--gray)">AI Engine chưa tải đủ — kiểm tra doanvan-ai-engine.js</span>'; return;
+  }
   const statuses = window.AI.getQuotaStatus();
   el.innerHTML = statuses.map(s => {
     const barColor = s.pct > 80 ? 'var(--red)' : s.pct > 50 ? 'var(--gold)' : '#16a34a';
@@ -3166,11 +3173,13 @@ function updateQuotaDisplay() {
 }
 
 function resetQuota() {
-  if(!window.AI) return;
-  // Clear quota storage
+  // Hoạt động cả khi AI engine chưa load — xóa trực tiếp localStorage
   try {
     const keys = Object.keys(localStorage).filter(k => k.startsWith('doanvan_aiquota_'));
     keys.forEach(k => localStorage.removeItem(k));
+    if(window.AI && window.AI.quota && typeof window.AI.quota.reset === 'function') {
+      window.AI.quota.reset();
+    }
     updateQuotaDisplay();
     toast('Đã reset bộ đếm quota', 'success');
   } catch(e) { toast('Lỗi reset quota: '+e.message, 'error'); }
@@ -3319,52 +3328,12 @@ async function extractText(file) {
   });
 }
 
-async function analyzeWithAI(text, filename) {
-  const prompt = `Bạn là chuyên gia phân tích văn bản hành chính của tổ chức Đoàn TNCS Hồ Chí Minh Việt Nam.
-Hãy phân tích văn bản sau và trả về JSON hợp lệ (không có markdown):
-
-NỘI DUNG VĂN BẢN:
-"""
-${text.substring(0, 6000)}
-"""
-
-Tên tệp gốc: ${filename}
-
-Trả về JSON với cấu trúc sau (tất cả trường bằng tiếng Việt):
-{
-  "title": "tiêu đề chính xác của văn bản",
-  "type": "chi-thi|nghi-quyet|ke-hoach|bao-cao|cong-van|thong-bao|to-trinh|bien-ban|khac",
-  "code": "số/ký hiệu văn bản nếu có, ví dụ 12/KH-ĐTN",
-  "issuer": "cơ quan/đơn vị ban hành",
-  "issueDate": "YYYY-MM-DD hoặc rỗng nếu không tìm thấy",
-  "deadline": "YYYY-MM-DD hạn chót thực hiện, hoặc rỗng",
-  "reportDate": "YYYY-MM-DD ngày báo cáo kết quả, hoặc rỗng",
-  "summary": "tóm tắt nội dung chính trong 3-5 câu",
-  "mainTasks": ["công việc 1", "công việc 2", "công việc 3"],
-  "priority": "high|med|low",
-  "keywords": ["từ khóa 1", "từ khóa 2"],
-  "reminderNotes": "ghi chú quan trọng cần nhắc nhở"
-}`;
-
-  try {
-    const raw = await callAI(prompt);
-    let json;
-    try {
-      const clean = raw.replace(/```json|```/g,'').trim();
-      json = JSON.parse(clean);
-    } catch { json = null; }
-
-    if(json) {
-      // THAY ĐỔI QUAN TRỌNG: Hiển thị modal xác nhận TRƯỚC khi lưu
-      showAiReviewModal(json, text, filename);
-    } else {
-      toast(`AI không trả về JSON hợp lệ cho ${filename} — lưu thủ công`, 'warning');
-      saveDocFallback(filename, text);
-    }
-  } catch(e) {
-    toast(`Lỗi AI: ${e.message}. Lưu thủ công...`, 'warning');
-    saveDocFallback(filename, text);
-  }
+// analyzeWithAI — được cung cấp bởi doanvan-ai-engine-v2.js (tự động override)
+// Fallback stub phòng trường hợp engine chưa load
+if (typeof analyzeWithAI === 'undefined') {
+  window.analyzeWithAI = async function(text, filename) {
+    toast('AI Engine chưa được tải. Vui lòng kiểm tra file doanvan-ai-engine-v2.js', 'error');
+  };
 }
 
 // Lưu dữ liệu tạm chờ xác nhận
@@ -3417,6 +3386,22 @@ function showAiReviewModal(json, rawText, filename) {
       <div class="ai-field-label"><i class="fas fa-align-left"></i> Tóm tắt nội dung <span class="ai-badge-sm">AI</span></div>
       <textarea class="ai-review-field" id="rv_summary" rows="3">${json.summary||''}</textarea>
     </div>
+    <div class="form-group">
+      <div class="ai-field-label"><i class="fas fa-map-marker-alt" style="color:var(--navy)"></i> Địa danh ký <span class="ai-badge-sm">AI</span></div>
+      <input type="text" class="ai-review-field" id="rv_signLocation" value="${(json.signLocation||'').replace(/"/g,'&quot;')}" placeholder="Ví dụ: Đồng Tháp">
+    </div>
+    <div class="form-group">
+      <div class="ai-field-label"><i class="fas fa-user-tie" style="color:var(--navy)"></i> Người ký / Chức vụ <span class="ai-badge-sm">AI</span></div>
+      <input type="text" class="ai-review-field" id="rv_signer" value="${(json.signer||'').replace(/"/g,'&quot;')}" placeholder="Họ tên, chức vụ">
+    </div>
+    <div class="form-group" style="grid-column:1/-1">
+      <div class="ai-field-label"><i class="fas fa-users" style="color:var(--navy)"></i> Đơn vị/cá nhân thực hiện <span class="ai-badge-sm">AI</span></div>
+      <input type="text" class="ai-review-field" id="rv_recipients" value="${((json.recipients||[]).join('; ')).replace(/"/g,'&quot;')}" placeholder="Phân cách bằng dấu chấm phẩy">
+    </div>
+    <div class="form-group" style="grid-column:1/-1">
+      <div class="ai-field-label"><i class="fas fa-gavel" style="color:var(--text-soft)"></i> Căn cứ pháp lý <span class="ai-badge-sm">AI</span></div>
+      <input type="text" class="ai-review-field" id="rv_legalBasis" value="${(json.legalBasis||'').replace(/"/g,'&quot;')}" placeholder="Nghị định, Thông tư, Điều lệ làm căn cứ">
+    </div>
   `;
 
   const tasksHtml = (json.mainTasks||[]).length ? `
@@ -3451,6 +3436,10 @@ function confirmSaveAiResult() {
     priority: document.getElementById('rv_priority')?.value || 'low',
     keywords: _pendingAiJson.keywords || [],
     reminderNotes: _pendingAiJson.reminderNotes || '',
+    signer:       document.getElementById('rv_signer')?.value.trim()       || _pendingAiJson.signer       || '',
+    signLocation: document.getElementById('rv_signLocation')?.value.trim() || _pendingAiJson.signLocation || '',
+    legalBasis:   document.getElementById('rv_legalBasis')?.value.trim()   || _pendingAiJson.legalBasis   || '',
+    recipients:   (document.getElementById('rv_recipients')?.value||'').split(/[;,]/).map(x=>x.trim()).filter(Boolean),
   };
   // Collect tasks
   const mainTasks = [];

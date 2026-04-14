@@ -136,6 +136,10 @@ const SheetsAPI = {
     const resp  = await fetch(`${SHEETS_API}/${sid}/values/${encodeURIComponent(range)}`, {
       headers: { Authorization: `Bearer ${token}` },
     });
+    if (resp.status === 400) {
+      // Sheet chưa tồn tại — trả về mảng rỗng thay vì throw
+      return [];
+    }
     if (!resp.ok) throw new Error(`Đọc sheet lỗi (${resp.status})`);
     const d = await resp.json();
     return d.values || [];
@@ -147,6 +151,7 @@ const SheetsAPI = {
     const resp  = await fetch(`${SHEETS_API}/${sid}/values:batchGet?${qs}`, {
       headers: { Authorization: `Bearer ${token}` },
     });
+    if (resp.status === 400) return ranges.map(() => []); // Sheet chưa tồn tại
     if (!resp.ok) throw new Error(`Batch read lỗi (${resp.status})`);
     const d = await resp.json();
     return (d.valueRanges || []).map(vr => vr.values || []);
@@ -154,13 +159,18 @@ const SheetsAPI = {
 
   async write(sid, range, values) {
     const token = await this._token();
+    // values must be 2D array; if caller passes [['']] to clear, ensure it's valid
+    const safeValues = (values && values.length && Array.isArray(values[0])) ? values : [values];
     const resp  = await fetch(
       `${SHEETS_API}/${sid}/values/${encodeURIComponent(range)}?valueInputOption=RAW`, {
       method: 'PUT',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ range, values }),
+      body: JSON.stringify({ range, values: safeValues }),
     });
-    if (!resp.ok) throw new Error(`Ghi sheet lỗi (${resp.status}): ` + await resp.text());
+    if (!resp.ok) {
+      const errText = await resp.text();
+      throw new Error(`Ghi sheet lỗi (${resp.status}): ${errText}`);
+    }
     return resp.json();
   },
 
@@ -227,7 +237,8 @@ const SheetsAPI = {
 const MTAdmin = {
 
   // Tạo spreadsheet mới với đầy đủ sheets
-  async initSpreadsheet(saJson, spreadsheetId, adminInfo) {
+  async initSpreadsheet(saJson, spreadsheetId, adminInfo, onProgress) {
+    onProgress?.('Đang xác thực Service Account...', 10);
     // Lưu tạm để dùng token
     MTConfig.save({
       serviceAccountJson: saJson,
@@ -239,31 +250,19 @@ const MTAdmin = {
     let sid = spreadsheetId;
 
     if (!sid) {
-      // Tạo spreadsheet mới
-      const token = await MTToken.get(saJson, true);
-      const resp  = await fetch(SHEETS_API, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          properties: { title: `ĐoànVăn — Hệ thống trung tâm — ${new Date().getFullYear()}` },
-          sheets: [
-            { properties: { title: SH.USERS,   sheetId: 0 } },
-            { properties: { title: SH.ORGS,    sheetId: 1 } },
-            { properties: { title: SH.DOCS,    sheetId: 2 } },
-            { properties: { title: SH.MEMBERS, sheetId: 3 } },
-            { properties: { title: SH.REMIND,  sheetId: 4 } },
-            { properties: { title: SH.TASKS,   sheetId: 5 } },
-            { properties: { title: SH.META,    sheetId: 6 } },
-          ],
-        }),
-      });
-      if (!resp.ok) throw new Error('Tạo spreadsheet thất bại: ' + await resp.text());
-      const d = await resp.json();
-      sid = d.spreadsheetId;
+      // Không cho tự tạo — SA không có quyền tạo file trên Drive người dùng
+      throw new Error('Vui lòng nhập Spreadsheet ID ở Bước 2. Tạo Google Sheet → share cho Service Account → dán ID vào đây.');
     }
 
+    // Kiểm tra và tạo các sheet còn thiếu trong spreadsheet có sẵn
+    onProgress?.('Đang kiểm tra cấu trúc Google Sheet...', 25);
+    await this._ensureSheets(saJson, sid);
+
     // Ghi headers + admin account
+    onProgress?.('Đang khởi tạo cấu trúc dữ liệu...', 50);
     await this._initHeaders(sid);
+
+    onProgress?.('Đang tạo tài khoản Admin...', 75);
     await this._createAdminAccount(sid, adminInfo);
 
     // Lưu config hoàn chỉnh
@@ -276,7 +275,34 @@ const MTAdmin = {
       setupAt: new Date().toISOString(),
     });
 
+    onProgress?.('Hoàn tất!', 100);
     return sid;
+  },
+
+  // Kiểm tra và tạo các sheet còn thiếu trong spreadsheet đã có
+  async _ensureSheets(saJson, sid) {
+    const REQUIRED = Object.values(SH); // ['system_users','organizations','system_meta','docs','members','reminders','tasks']
+    const token = await MTToken.get(saJson);
+
+    // Lấy danh sách sheet hiện có
+    const resp = await fetch(`${SHEETS_API}/${sid}?fields=sheets.properties.title`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!resp.ok) throw new Error(`Không đọc được spreadsheet (${resp.status}). Kiểm tra lại Spreadsheet ID và quyền share cho Service Account.`);
+    const data = await resp.json();
+    const existing = (data.sheets || []).map(s => s.properties.title);
+
+    const missing = REQUIRED.filter(name => !existing.includes(name));
+    if (!missing.length) return; // Đã đủ sheet
+
+    // Tạo các sheet còn thiếu
+    const requests = missing.map(title => ({ addSheet: { properties: { title } } }));
+    const addResp = await fetch(`${SHEETS_API}/${sid}:batchUpdate`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ requests }),
+    });
+    if (!addResp.ok) throw new Error(`Không tạo được sheet: ${await addResp.text()}`);
   },
 
   async _initHeaders(sid) {
@@ -371,7 +397,20 @@ const MTAdmin = {
       await SheetsAPI.write(cfg.spreadsheetId, `${SH.USERS}!K${rowIdx}`, [[code]]);
     }
 
-    // Lưu payload vào localStorage để mobile cùng máy dùng được ngay
+    // Lưu payload lên GSheet để mobile từ xa dùng được
+    // Dùng sheet system_meta với key "invite_CODE"
+    try {
+      const payloadStr = JSON.stringify(payload);
+      // Lưu compressed: key=invite_CODE, value=JSON payload (cắt bớt saJson nếu quá dài)
+      // saJson thường rất dài, lưu nguyên để mobile có thể dùng
+      await SheetsAPI.append(cfg.spreadsheetId, `${SH.META}!A:B`, [[
+        'invite_' + code,
+        payloadStr,
+      ]]);
+    } catch (e) {
+      console.warn('Không ghi được invite lên GSheet:', e.message);
+    }
+    // Cũng lưu localStorage cho cùng thiết bị dùng ngay
     localStorage.setItem('mt_invite_' + code, JSON.stringify(payload));
 
     return { code, payload };
@@ -394,14 +433,18 @@ const MTAuth = {
       try { payload = JSON.parse(local); } catch { /**/ }
     }
 
-    // 2) Nếu không có local → tìm trong GSheet (mobile từ xa)
+    // 2) Nếu không có local → tìm "Deep Code" localStorage (cùng máy)
     if (!payload) {
-      // Cần biết spreadsheetId và saJson từ admin — embed trong QR/code
-      // Giải pháp: admin tạo "Deep Invite Code" chứa thông tin trong chính code
       payload = _mtDecodeDeepCode(code);
     }
 
-    if (!payload) throw new Error('Mã mời không hợp lệ hoặc đã hết hạn');
+    // 3) Nếu vẫn không có → đọc từ GSheet qua bootstrap spreadsheetId
+    //    Mobile cần biết spreadsheetId trước — lấy từ config hiện tại nếu có
+    if (!payload) {
+      payload = await _mtFetchInviteFromSheet(code);
+    }
+
+    if (!payload) throw new Error('Mã mời không hợp lệ hoặc đã hết hạn. Hãy đảm bảo bạn đã nhập đúng mã từ PC.');
     if (payload.expiry && Date.now() > payload.expiry) throw new Error('Mã mời đã hết hạn (>7 ngày)');
 
     // 3) Xác thực với GSheet: tìm user trong system_users
@@ -606,19 +649,23 @@ const MTSync = {
 
     const toRows = (arr, hdrs) => arr.map(r => SheetsAPI.objToRow(hdrs, r));
 
-    await SheetsAPI.batchClear(cfg.spreadsheetId, [
-      `${SH.DOCS}!A2:O`, `${SH.MEMBERS}!A2:O`,
-      `${SH.REMIND}!A2:I`, `${SH.TASKS}!A2:J`,
-    ]);
-
-    const updateData = [];
-    if (mergedDocs.length)    updateData.push({ range: `${SH.DOCS}!A2`,    values: toRows(mergedDocs,    docHdr) });
-    if (mergedMembers.length) updateData.push({ range: `${SH.MEMBERS}!A2`, values: toRows(mergedMembers, memHdr) });
-    if (mergedReminds.length) updateData.push({ range: `${SH.REMIND}!A2`,  values: toRows(mergedReminds, remHdr) });
-    if (mergedTasks.length)   updateData.push({ range: `${SH.TASKS}!A2`,   values: toRows(mergedTasks,   tskHdr) });
-
-    if (updateData.length) {
-      await SheetsAPI.batchUpdate(cfg.spreadsheetId, updateData);
+    // Clear + rewrite per sheet using individual PUT (avoids batchClear 400 on fresh sheets)
+    const sheetDefs = [
+      { name: SH.DOCS,    rows: mergedDocs,    hdr: docHdr  },
+      { name: SH.MEMBERS, rows: mergedMembers, hdr: memHdr  },
+      { name: SH.REMIND,  rows: mergedReminds, hdr: remHdr  },
+      { name: SH.TASKS,   rows: mergedTasks,   hdr: tskHdr  },
+    ];
+    for (const { name, rows, hdr } of sheetDefs) {
+      const lastCol = String.fromCharCode(64 + hdr.length);
+      const clearRange = `${name}!A2:${lastCol}1000`;
+      // Clear first
+      await SheetsAPI.write(cfg.spreadsheetId, clearRange, [['']]).catch(() => {});
+      // Write data if any
+      if (rows.length) {
+        const writeRange = `${name}!A2:${lastCol}${rows.length + 1}`;
+        await SheetsAPI.write(cfg.spreadsheetId, writeRange, toRows(rows, hdr));
+      }
     }
 
     onProgress?.('Cập nhật meta...', 90);
@@ -748,6 +795,31 @@ function _mtDecodeDeepCode(code) {
 // ─────────────────────────────────────────────────────────────────────
 //  I. UTILITIES
 // ─────────────────────────────────────────────────────────────────────
+
+// Đọc invite payload từ GSheet — dùng khi mobile không có localStorage
+// Cần spreadsheetId: lấy từ MTConfig hiện tại, hoặc từ payload đã biết trước
+async function _mtFetchInviteFromSheet(code) {
+  try {
+    // Lấy spreadsheetId + saJson từ config hiện tại (nếu mobile đã từng login)
+    const cfg = MTConfig.get();
+    if (!cfg?.spreadsheetId || !cfg?.serviceAccountJson) return null;
+
+    const rows = await SheetsAPI.read(cfg.spreadsheetId, `${SH.META}!A:B`);
+    if (!rows || rows.length < 2) return null;
+
+    // Tìm hàng có key = "invite_CODE"
+    const targetKey = 'invite_' + code;
+    const found = rows.slice(1).find(r => r[0] === targetKey);
+    if (!found || !found[1]) return null;
+
+    const payload = JSON.parse(found[1]);
+    if (payload.expiry && Date.now() > payload.expiry) return null; // Hết hạn
+    return payload;
+  } catch (e) {
+    console.warn('_mtFetchInviteFromSheet:', e.message);
+    return null;
+  }
+}
 function _mtHashPIN(pin) {
   let h = 5381;
   for (let i = 0; i < pin.length; i++) h = ((h << 5) + h) ^ pin.charCodeAt(i);
@@ -848,20 +920,44 @@ function mtShowAdminSetup() {
 
     <!-- STEP 2 -->
     <div id="mtStepPanel2" style="display:none">
-      <div style="background:rgba(22,163,74,0.06);border-radius:12px;padding:14px;margin-bottom:16px;font-size:0.82rem;border:1px solid rgba(22,163,74,0.2)">
-        <div style="font-weight:700;color:#15803d;margin-bottom:4px"><i class="fas fa-lightbulb"></i> Khuyến nghị</div>
-        <div style="color:var(--text-soft)">Để trống → hệ thống sẽ <strong>tự động tạo Google Sheet mới</strong> với đầy đủ cấu trúc.<br>
-        Nhập ID nếu bạn đã có sheet sẵn và muốn dùng lại (lưu ý: hệ thống sẽ thêm các sheet cần thiết vào).</div>
+
+      <!-- Hướng dẫn 3 bước -->
+      <div style="background:rgba(2,132,199,0.05);border-radius:12px;padding:14px;margin-bottom:14px;font-size:0.82rem;border:1px solid rgba(2,132,199,0.2)">
+        <div style="font-weight:700;color:#0369a1;margin-bottom:8px"><i class="fas fa-info-circle"></i> Hướng dẫn thiết lập Google Sheet</div>
+        <div style="display:flex;flex-direction:column;gap:6px;color:var(--text-soft)">
+          <div><span style="display:inline-flex;width:20px;height:20px;border-radius:50%;background:#0284c7;color:#fff;font-size:0.65rem;font-weight:700;align-items:center;justify-content:center;margin-right:6px">1</span>
+            Vào <a href="https://sheets.google.com" target="_blank" style="color:#0284c7;font-weight:600">sheets.google.com</a> → Tạo spreadsheet mới (trống)
+          </div>
+          <div><span style="display:inline-flex;width:20px;height:20px;border-radius:50%;background:#0284c7;color:#fff;font-size:0.65rem;font-weight:700;align-items:center;justify-content:center;margin-right:6px">2</span>
+            Nhấn <b>Chia sẻ</b> → thêm <b id="mtSAEmailHint" style="color:#dc2626;font-family:monospace;font-size:0.8rem">email-service-account</b> với quyền <b>Người chỉnh sửa</b>
+          </div>
+          <div><span style="display:inline-flex;width:20px;height:20px;border-radius:50%;background:#0284c7;color:#fff;font-size:0.65rem;font-weight:700;align-items:center;justify-content:center;margin-right:6px">3</span>
+            Copy ID từ URL và dán vào ô bên dưới: <br>
+            <span style="font-family:monospace;font-size:0.75rem;background:#f1f5f9;padding:2px 6px;border-radius:4px;margin-top:3px;display:inline-block">
+              docs.google.com/spreadsheets/d/<b style="color:#dc2626">ID_CẦN_COPY</b>/edit
+            </span>
+          </div>
+        </div>
       </div>
+
       <div class="form-group">
-        <label class="form-label">Spreadsheet ID <span style="font-size:0.75rem;color:var(--gray)">(tuỳ chọn — để trống để tạo mới)</span></label>
-        <input class="form-control" id="mtSheetIdInput" placeholder="VD: 1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgVE2upms"
-          style="font-family:monospace;font-size:0.82rem">
-        <div class="form-hint">Lấy từ URL: docs.google.com/spreadsheets/d/<strong>[ID này]</strong>/edit</div>
+        <label class="form-label">
+          Spreadsheet ID <span style="color:#dc2626;font-size:0.8rem">* bắt buộc</span>
+        </label>
+        <input class="form-control" id="mtSheetIdInput" placeholder="Dán Spreadsheet ID vào đây..."
+          style="font-family:monospace;font-size:0.82rem;border-color:#f59e0b"
+          oninput="this.style.borderColor=this.value?'var(--green)':'#f59e0b'">
+        <div class="form-hint" style="color:#f59e0b">
+          <i class="fas fa-exclamation-triangle"></i>
+          Bắt buộc — hệ thống sẽ tự tạo các sheet cần thiết trong spreadsheet này.
+        </div>
       </div>
+
+      <div id="mtStep2Status" style="font-size:0.8rem;min-height:16px;margin-bottom:10px"></div>
+
       <div style="display:flex;gap:8px">
         <button class="btn btn-outline" onclick="mtGoStep(1)"><i class="fas fa-arrow-left"></i> Quay lại</button>
-        <button class="btn btn-primary" onclick="mtGoStep(3)" style="flex:1">
+        <button class="btn btn-primary" onclick="mtValidateStep2()" style="flex:1">
           Tiếp theo <i class="fas fa-arrow-right"></i>
         </button>
       </div>
@@ -919,6 +1015,35 @@ function mtGoStep(step) {
       btn.disabled = i > step;
     }
   });
+  // Khi vào bước 2: điền email SA vào hint
+  if (step === 2) {
+    try {
+      const saRaw = document.getElementById('mtSAInput')?.value.trim();
+      if (saRaw) {
+        const sa = JSON.parse(saRaw);
+        const hint = document.getElementById('mtSAEmailHint');
+        if (hint && sa.client_email) hint.textContent = sa.client_email;
+      }
+    } catch {}
+  }
+}
+
+// Validate bước 2 trước khi sang bước 3
+function mtValidateStep2() {
+  const sheetId = document.getElementById('mtSheetIdInput')?.value.trim();
+  const status  = document.getElementById('mtStep2Status');
+  if (!sheetId) {
+    if (status) status.innerHTML = '<span style="color:#dc2626"><i class="fas fa-exclamation-triangle"></i> Vui lòng nhập Spreadsheet ID trước khi tiếp tục.</span>';
+    document.getElementById('mtSheetIdInput')?.focus();
+    return;
+  }
+  // Validate độ dài ID (Google Sheet ID thường 44 ký tự)
+  if (sheetId.length < 20) {
+    if (status) status.innerHTML = '<span style="color:#dc2626"><i class="fas fa-times-circle"></i> ID không hợp lệ. Hãy copy đúng phần ID từ URL.</span>';
+    return;
+  }
+  if (status) status.innerHTML = '<span style="color:#16a34a"><i class="fas fa-check-circle"></i> Spreadsheet ID hợp lệ.</span>';
+  mtGoStep(3);
 }
 
 async function mtTestSA() {
@@ -953,19 +1078,60 @@ async function mtDoAdminSetup() {
   if (pin !== pin2) { status.innerHTML = '<span style="color:red">Mã PIN xác nhận không khớp</span>'; return; }
   if (pin.length > 0 && !/^\d{4,8}$/.test(pin)) { status.innerHTML = '<span style="color:red">PIN phải là 4-8 chữ số</span>'; return; }
 
-  status.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Đang thiết lập hệ thống...';
+  // Validate: bắt buộc nhập spreadsheet ID (SA không thể tự tạo file)
+  if (!sheetId) {
+    status.innerHTML = '<span style="color:#dc2626"><i class="fas fa-exclamation-triangle"></i> ' +
+      'Vui lòng quay lại Bước 2 và nhập Spreadsheet ID. ' +
+      'Tạo Google Sheet → Share cho Service Account → Dán ID vào ô.</span>';
+    document.getElementById('mtStep2Btn')?.click?.();
+    mtGoStep(2);
+    return;
+  }
+
+  const btn = document.querySelector('#mtStepPanel3 .btn-primary');
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Đang xử lý...'; }
+
+  const onProgress = (msg, pct) => {
+    status.innerHTML = `
+      <div style="margin-bottom:6px;color:var(--navy);font-size:0.8rem">
+        <i class="fas fa-spinner fa-spin" style="color:var(--red)"></i> ${msg}
+      </div>
+      <div style="background:#e5e7eb;border-radius:999px;height:6px;overflow:hidden">
+        <div style="height:100%;border-radius:999px;background:linear-gradient(90deg,var(--red),#f59e0b);width:${pct}%;transition:width 0.4s ease"></div>
+      </div>`;
+  };
+
   try {
-    const sid = await MTAdmin.initSpreadsheet(saJson, sheetId || null, { username, displayName: dispName, pin });
-    status.innerHTML = `<span style="color:#16a34a"><i class="fas fa-check-circle"></i> Thiết lập thành công! Sheet ID: <code>${sid}</code></span>`;
+    const sid = await MTAdmin.initSpreadsheet(saJson, sheetId, { username, displayName: dispName, pin }, onProgress);
+    status.innerHTML = `
+      <div style="color:#16a34a;font-weight:600;margin-bottom:6px">
+        <i class="fas fa-check-circle"></i> Thiết lập thành công!
+      </div>
+      <div style="font-size:0.76rem;color:var(--gray)">
+        Sheet ID: <code style="background:#f3f4f6;padding:1px 5px;border-radius:4px">${sid}</code>
+        &nbsp;<a href="https://docs.google.com/spreadsheets/d/${sid}" target="_blank" style="color:#0284c7">
+          <i class="fas fa-external-link-alt"></i> Mở
+        </a>
+      </div>`;
     _mtStartSession(MTConfig.get());
     if (typeof toast === 'function') toast('🎉 Hệ thống trung tâm đã sẵn sàng! Bạn đang đăng nhập với quyền Admin.', 'success');
     setTimeout(() => {
       document.getElementById('mtAdminSetupModal')?.remove();
       mtUpdateUIAfterLogin();
       if (typeof dvInitSync === 'function') dvInitSync();
-    }, 1500);
+    }, 1800);
   } catch (e) {
-    status.innerHTML = `<span style="color:red"><i class="fas fa-times-circle"></i> Lỗi: ${e.message}</span>`;
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-check-circle"></i> Hoàn tất thiết lập'; }
+    // Gợi ý hành động dựa theo loại lỗi
+    let hint = '';
+    if (e.message.includes('403') || e.message.includes('Forbidden')) {
+      hint = ' → Kiểm tra lại email Service Account đã được <b>share quyền Chỉnh sửa</b> vào spreadsheet chưa.';
+    } else if (e.message.includes('404') || e.message.includes('spreadsheet')) {
+      hint = ' → Spreadsheet ID không tồn tại hoặc chưa được share. Kiểm tra lại Bước 2.';
+    } else if (e.message.includes('400')) {
+      hint = ' → Sheet không hợp lệ. Thử tạo Google Sheet mới và share lại.';
+    }
+    status.innerHTML = `<span style="color:#dc2626"><i class="fas fa-times-circle"></i> <b>Lỗi:</b> ${e.message}${hint}</span>`;
   }
 }
 
@@ -979,7 +1145,7 @@ function mtShowInviteManager() {
   }
 
   const existing = document.getElementById('mtInviteModal');
-  if (existing) { existing.classList.add('open'); mtLoadUsers(); return; }
+  if (existing) { existing.classList.add('open'); mtEnsureSheetsAndLoad(); return; }
 
   const modal = document.createElement('div');
   modal.id    = 'mtInviteModal';
@@ -991,6 +1157,20 @@ function mtShowInviteManager() {
     <button class="btn btn-ghost" onclick="document.getElementById('mtInviteModal').classList.remove('open')"><i class="fas fa-times"></i></button>
   </div>
   <div class="modal-body" style="padding:24px">
+
+    <!-- Banner khởi tạo hệ thống (ẩn sau khi init xong) -->
+    <div id="mtInitBanner" style="display:none;background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.3);border-radius:10px;padding:12px 14px;margin-bottom:14px;font-size:0.82rem">
+      <div style="display:flex;align-items:center;gap:10px">
+        <i class="fas fa-tools" style="color:#d97706;font-size:1.1rem"></i>
+        <div style="flex:1">
+          <div style="font-weight:700;color:#92400e;margin-bottom:2px">Chưa khởi tạo sheet hệ thống</div>
+          <div style="color:#78350f">Sheet <code>system_users</code> và <code>organizations</code> chưa tồn tại trong Google Sheet. Nhấn nút bên phải để tạo tự động.</div>
+        </div>
+        <button class="btn btn-sm" style="background:#d97706;color:#fff;white-space:nowrap;flex-shrink:0" onclick="mtInitSystemSheets(this)">
+          <i class="fas fa-magic"></i> Khởi tạo ngay
+        </button>
+      </div>
+    </div>
 
     <!-- Tabs -->
     <div class="tabs" style="margin-bottom:16px">
@@ -1069,7 +1249,7 @@ function mtShowInviteManager() {
 
   document.body.appendChild(modal);
   modal.addEventListener('click', e => { if (e.target === modal) modal.classList.remove('open'); });
-  setTimeout(() => { modal.classList.add('open'); mtLoadUsers(); mtLoadOrgsForSelect(); }, 10);
+  setTimeout(() => { modal.classList.add('open'); mtEnsureSheetsAndLoad(); }, 10);
 }
 
 function mtInviteTab(btn, tab) {
@@ -1078,8 +1258,85 @@ function mtInviteTab(btn, tab) {
   btn.classList.add('active');
   const panel = document.getElementById(`mtInviteTab${tab.charAt(0).toUpperCase() + tab.slice(1)}`);
   if (panel) panel.classList.add('active');
-  if (tab === 'users') mtLoadUsers();
-  if (tab === 'orgs')  mtLoadOrgs();
+  if (tab === 'users') mtEnsureSheetsAndLoad();
+  if (tab === 'orgs')  mtEnsureAndLoadOrgs();
+}
+
+// Khởi tạo sheet hệ thống từ nút trong banner
+async function mtInitSystemSheets(btn) {
+  const cfg = MTConfig.get();
+  if (!cfg?.spreadsheetId || !cfg?.serviceAccountJson) return;
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Đang tạo...'; }
+  try {
+    await MTAdmin._ensureSheets(cfg.serviceAccountJson, cfg.spreadsheetId);
+    await MTAdmin._initHeaders(cfg.spreadsheetId);
+    document.getElementById('mtInitBanner')?.style && (document.getElementById('mtInitBanner').style.display = 'none');
+    if (typeof toast === 'function') toast('<i class="fas fa-check-circle" style="color:#16a34a"></i> Đã khởi tạo sheet hệ thống!', 'success');
+    mtLoadUsers();
+    mtLoadOrgsForSelect();
+  } catch (e) {
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-magic"></i> Khởi tạo ngay'; }
+    if (typeof toast === 'function') toast('Lỗi khởi tạo: ' + e.message, 'error');
+  }
+}
+
+// Đảm bảo sheet tồn tại rồi mới load data — tránh lỗi 400
+async function mtEnsureSheetsAndLoad() {
+  const cfg = MTConfig.get();
+  if (!cfg?.spreadsheetId || !cfg?.serviceAccountJson) {
+    mtLoadUsers(); mtLoadOrgsForSelect(); return;
+  }
+
+  const userList = document.getElementById('mtUserList');
+  if (userList) userList.innerHTML = '<div style="text-align:center;padding:20px;color:var(--gray)"><i class="fas fa-spinner fa-spin"></i> Đang kiểm tra cấu trúc hệ thống...</div>';
+
+  try {
+    // Bước 1: Kiểm tra sheet nào đang thiếu
+    const token = await MTToken.get(cfg.serviceAccountJson);
+    const metaResp = await fetch(`${SHEETS_API}/${cfg.spreadsheetId}?fields=sheets.properties.title`, {
+      headers: { Authorization: `Bearer ${token}` }
+    });
+    let needsInit = false;
+    if (metaResp.ok) {
+      const metaData = await metaResp.json();
+      const existing = (metaData.sheets || []).map(s => s.properties.title);
+      const allRequired = Object.values(SH);
+      const missing = allRequired.filter(n => !existing.includes(n));
+      if (missing.length > 0) {
+        // Hiện banner cảnh báo
+        const banner = document.getElementById('mtInitBanner');
+        if (banner) banner.style.display = 'block';
+        needsInit = true;
+        // Auto-init
+        if (userList) userList.innerHTML = '<div style="text-align:center;padding:20px;color:#d97706"><i class="fas fa-tools"></i> Đang tạo sheet còn thiếu: ' + missing.join(', ') + '...</div>';
+        await MTAdmin._ensureSheets(cfg.serviceAccountJson, cfg.spreadsheetId);
+        await MTAdmin._initHeaders(cfg.spreadsheetId);
+        document.getElementById('mtInitBanner')?.style && (document.getElementById('mtInitBanner').style.display = 'none');
+      }
+    }
+  } catch (e) {
+    console.warn('mtEnsureSheetsAndLoad init:', e.message);
+  }
+
+  mtLoadUsers();
+  mtLoadOrgsForSelect();
+}
+
+// Đảm bảo sheet tồn tại rồi mới load tab Cơ sở Đoàn
+async function mtEnsureAndLoadOrgs() {
+  const cfg = MTConfig.get();
+  const el  = document.getElementById('mtOrgList');
+  if (!cfg?.spreadsheetId || !cfg?.serviceAccountJson) {
+    mtLoadOrgs(); return;
+  }
+  if (el) el.innerHTML = '<div style="text-align:center;padding:16px;color:var(--gray)"><i class="fas fa-spinner fa-spin"></i> Đang kiểm tra...</div>';
+  try {
+    await MTAdmin._ensureSheets(cfg.serviceAccountJson, cfg.spreadsheetId);
+    const metaRows = await SheetsAPI.read(cfg.spreadsheetId, `${SH.META}!A:B`);
+    if (!metaRows || metaRows.length < 2) await MTAdmin._initHeaders(cfg.spreadsheetId);
+  } catch (e) { console.warn('mtEnsureAndLoadOrgs:', e.message); }
+  mtLoadOrgs();
+  mtLoadOrgsForSelect();
 }
 
 async function mtLoadUsers() {
@@ -1088,7 +1345,18 @@ async function mtLoadUsers() {
   el.innerHTML = '<div style="text-align:center;padding:20px;color:var(--gray)"><i class="fas fa-spinner fa-spin"></i> Đang tải...</div>';
   try {
     const users = await MTUserMgr.listUsers();
-    if (!users.length) { el.innerHTML = '<div style="color:var(--gray);text-align:center;padding:16px">Chưa có người dùng</div>'; return; }
+    if (!users.length) {
+      el.innerHTML = `
+        <div style="text-align:center;padding:24px;color:var(--gray)">
+          <i class="fas fa-users" style="font-size:2rem;opacity:0.3;display:block;margin-bottom:8px"></i>
+          <div style="font-weight:600;margin-bottom:4px">Chưa có người dùng nào</div>
+          <div style="font-size:0.78rem;margin-bottom:12px">Sheet <code>system_users</code> trống hoặc chưa được khởi tạo.</div>
+          <button class="btn btn-outline btn-sm" onclick="mtEnsureSheetsAndLoad()">
+            <i class="fas fa-sync-alt"></i> Khởi tạo lại &amp; Tải
+          </button>
+        </div>`;
+      return;
+    }
 
     el.innerHTML = `
 <table class="doc-table" style="width:100%">
@@ -1113,7 +1381,14 @@ async function mtLoadUsers() {
   </tbody>
 </table>`;
   } catch (e) {
-    el.innerHTML = `<div style="color:red;padding:12px">Lỗi: ${e.message}</div>`;
+    el.innerHTML = `
+      <div style="color:#dc2626;padding:16px;background:rgba(220,38,38,0.05);border-radius:8px;border:1px solid rgba(220,38,38,0.15)">
+        <div style="font-weight:700;margin-bottom:4px"><i class="fas fa-exclamation-triangle"></i> Lỗi tải dữ liệu</div>
+        <div style="font-size:0.8rem;margin-bottom:10px">${e.message}</div>
+        <button class="btn btn-outline btn-sm" onclick="mtEnsureSheetsAndLoad()">
+          <i class="fas fa-sync-alt"></i> Thử lại
+        </button>
+      </div>`;
   }
 }
 
@@ -1136,7 +1411,14 @@ async function mtLoadOrgs() {
   <code style="font-size:0.7rem;color:var(--gray);background:var(--cream);padding:3px 8px;border-radius:6px">${o.id}</code>
 </div>`).join('');
   } catch (e) {
-    el.innerHTML = `<div style="color:red;padding:12px">Lỗi: ${e.message}</div>`;
+    el.innerHTML = `
+      <div style="color:#dc2626;padding:14px;background:rgba(220,38,38,0.05);border-radius:8px;border:1px solid rgba(220,38,38,0.15)">
+        <div style="font-weight:700;margin-bottom:4px"><i class="fas fa-exclamation-triangle"></i> Lỗi tải dữ liệu</div>
+        <div style="font-size:0.8rem;margin-bottom:10px">${e.message}</div>
+        <button class="btn btn-outline btn-sm" onclick="mtEnsureAndLoadOrgs()">
+          <i class="fas fa-sync-alt"></i> Thử lại
+        </button>
+      </div>`;
   }
 }
 
