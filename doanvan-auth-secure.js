@@ -596,7 +596,7 @@ function _buildUsernameLoginUI() {
         Phiên bảo mật · Auth Secure v${AUTH_SECURE_VERSION}
       </div>
     </div>
-  </div>\`;
+  </div>`;
 }
 
 /** Hiển thị màn hình đăng nhập Username+PIN */
