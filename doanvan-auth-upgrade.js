@@ -448,7 +448,7 @@ window.dvAuthUpgrade_showInviteQR = function(code) {
 };
 
 // Patch mtCreateInvite để tự thêm QR
-const _orig_mtCreateInvite = window.mtCreateInvite;
+var _orig_mtCreateInvite = window.mtCreateInvite;
 window.mtCreateInvite = async function() {
   await _orig_mtCreateInvite?.();
   const codeEl = document.getElementById('mtInviteCodeDisplay');
@@ -463,7 +463,7 @@ window.mtCreateInvite = async function() {
 // ─────────────────────────────────────────────────────────────────────
 
 /** Kiểm tra và ghi đè quyền tạo invite — manager được phép tạo cho org của mình */
-const _origGenerateInvite = window.MTAdmin?.generateInviteCode;
+var _origGenerateInvite = window.MTAdmin?.generateInviteCode;
 if (window.MTAdmin) {
   const _originalGenerate = MTAdmin.generateInviteCode.bind(MTAdmin);
   MTAdmin.generateInviteCode = async function(targetUsername, role, orgId, orgName) {
@@ -486,7 +486,7 @@ if (window.MTAdmin) {
 // ─────────────────────────────────────────────────────────────────────
 
 /** Ghi đè dvOpenUserMenu để thêm mục "Tài khoản" */
-const _origOpenUserMenu = window.dvOpenUserMenu;
+var _origOpenUserMenu = window.dvOpenUserMenu;
 window.dvOpenUserMenu = function() {
   // Gọi hàm gốc
   _origOpenUserMenu?.();
@@ -541,7 +541,7 @@ async function _dvUpgrade_updateLastLogin() {
 // ─────────────────────────────────────────────────────────────────────
 
 /** Patch mtLoadUsers để hiển thị nút "Gửi lại mã mời" cho user pending */
-const _origMtLoadUsers = window.mtLoadUsers;
+var _origMtLoadUsers = window.mtLoadUsers;
 window.mtLoadUsers = async function() {
   await _origMtLoadUsers?.();
 

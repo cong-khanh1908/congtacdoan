@@ -695,7 +695,8 @@ window.generateReportAI = async function() {
 /**
  * PATCH 3: loadSummary — Nâng cấp prompt tổng hợp trích yếu
  */
-const _origLoadSummary = window.loadSummary;
+// Sử dụng var thay const để tránh SyntaxError khi khai báo trùng trong global scope
+var _origLoadSummary = window.loadSummary;
 window.loadSummary = async function() {
   // Make sure we're on the right tab (merged from index.html patch)
   const vanBanTab = document.getElementById('summary-tab-van-ban');
@@ -747,7 +748,7 @@ window.loadSummary = async function() {
 /**
  * PATCH 4: aiAnalytics / loadAiAnalytics — Nâng cấp prompt phân tích dashboard
  */
-const _origAiAnalytics = window.loadAiAnalytics || window.aiAnalytics;
+var _origAiAnalytics = window.loadAiAnalytics || window.aiAnalytics;
 window.loadAiAnalytics = window.aiAnalytics = async function() {
   const settings = (typeof DB !== 'undefined' && DB.getObj) ? DB.getObj('settings') : {};
   if (!settings.apiKey) {
@@ -796,7 +797,7 @@ window.loadAiAnalytics = window.aiAnalytics = async function() {
 /**
  * PATCH 5: aiSearch — Nâng cấp prompt tìm kiếm ngữ nghĩa
  */
-const _origAiSearch = window.aiSearch;
+var _origAiSearch = window.aiSearch;
 window.aiSearch = async function() {
   const kw = document.getElementById('advSearchKeyword')?.value.trim();
   if (!kw) { if (typeof toast === 'function') toast('Nhập từ khóa cần tìm', 'warning'); return; }
@@ -883,7 +884,7 @@ window.buildTemplatePromptUpgraded = function(data) {
 };
 
 // Override callAI để intercept template prompt cũ và nâng cấp
-const _origCallAI = window.callAI;
+var _origCallAI = window.callAI;
 window.callAI = async function(prompt, opts = {}) {
   // Nhận diện template prompt cũ → replace bằng prompt mới
   if (
