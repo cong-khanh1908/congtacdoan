@@ -794,78 +794,282 @@ function _renderSecureRoleBadge(cfg) {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-//  MÀN HÌNH: CÀI ĐẶT ADMIN
-//  ✅ FIX: Không đóng overlay gốc, mở modal TRÊN overlay
-//  ✅ FIX: Sau hoàn tất setup → tự render PIN login ngay
+//  MÀN HÌNH: CÀI ĐẶT ADMIN (inline trong dvSecureAuth overlay)
+//
+//  Lý do KHÔNG gọi mtShowAdminSetup() ngoài:
+//  → .modal-overlay có z-index:200, #dvSecureAuth có z-index:99999
+//  → Modal admin bị che bởi overlay → màn hình đen
+//
+//  Giải pháp: render toàn bộ UI 3 bước ngay trong #dvSecureBox
+//  Tái sử dụng mtGoStep / mtTestSA / mtValidateStep2 / mtDoAdminSetup
+//  có sẵn từ doanvan-multitenant.js
 // ─────────────────────────────────────────────────────────────────────
 window.dvSecureOpenAdminSetup = function() {
-  // KHÔNG remove dvSecureAuth — chỉ ẩn card để modal admin nổi lên trên
-  const box = document.getElementById('dvSecureBox');
-  if (box) box.style.display = 'none';
+  _injectSecureCSS();
+  document.getElementById('dvSecureAuth')?.remove();
 
-  if (typeof mtShowAdminSetup === 'function') {
-    // Hook vào callback hoàn tất setup để auto login
-    _hookAdminSetupComplete();
-    mtShowAdminSetup();
-  } else {
-    alert('Vui lòng đợi tải xong trang rồi thử lại.');
-    if (box) box.style.display = '';
+  const overlay = document.createElement('div');
+  overlay.id = 'dvSecureAuth';
+  // Mở rộng card để chứa form 3 bước
+  overlay.innerHTML = `
+  <div id="dvSecureBox" style="max-width:580px">
+    <div class="dvsec-header" style="padding:20px 24px 16px">
+      <button class="dvsec-switch-btn" onclick="dvSecureShowLogin()" title="Quay lại">
+        <i class="fas fa-arrow-left"></i> Quay lại
+      </button>
+      <div class="dvsec-logo"><i class="fas fa-shield-alt"></i></div>
+      <div class="dvsec-title">Thiết lập Admin</div>
+      <div class="dvsec-sub">Cài đặt hệ thống lần đầu</div>
+    </div>
+    <div class="dvsec-body scroll" style="padding:20px 22px 22px">
+
+      <!-- STEPPER -->
+      <div style="display:flex;gap:4px;margin-bottom:20px;background:#f1f5f9;border-radius:10px;padding:4px">
+        <button id="dvSetupStep1Btn"
+          style="flex:1;padding:8px 6px;border:none;border-radius:7px;font-size:0.73rem;font-weight:700;cursor:pointer;background:linear-gradient(135deg,#c0392b,#e74c3c);color:#fff;display:flex;align-items:center;justify-content:center;gap:4px">
+          <i class="fas fa-key"></i> 1. Service Account
+        </button>
+        <button id="dvSetupStep2Btn" disabled
+          style="flex:1;padding:8px 6px;border:none;border-radius:7px;font-size:0.73rem;font-weight:700;cursor:pointer;background:transparent;color:#94a3b8;display:flex;align-items:center;justify-content:center;gap:4px;transition:all 0.2s">
+          <i class="fas fa-table"></i> 2. Google Sheet
+        </button>
+        <button id="dvSetupStep3Btn" disabled
+          style="flex:1;padding:8px 6px;border:none;border-radius:7px;font-size:0.73rem;font-weight:700;cursor:pointer;background:transparent;color:#94a3b8;display:flex;align-items:center;justify-content:center;gap:4px;transition:all 0.2s">
+          <i class="fas fa-user-shield"></i> 3. Tài khoản
+        </button>
+      </div>
+
+      <!-- STEP 1: Service Account -->
+      <div id="dvSetupPanel1">
+        <div style="background:rgba(26,35,64,0.04);border-radius:10px;padding:14px;margin-bottom:14px;font-size:0.8rem;line-height:1.75">
+          <div style="font-weight:700;color:#1a2340;margin-bottom:6px">
+            <i class="fas fa-info-circle" style="color:#f59e0b"></i> Hướng dẫn tạo Service Account
+          </div>
+          <ol style="margin:0;padding-left:16px;color:#64748b">
+            <li>Vào <a href="https://console.cloud.google.com" target="_blank" style="color:#c0392b;font-weight:600">Google Cloud Console</a> → Tạo project mới</li>
+            <li>Bật API: <strong>Google Sheets API</strong> và <strong>Google Drive API</strong></li>
+            <li>IAM & Admin → Service Accounts → Tạo service account</li>
+            <li>Thêm key → JSON → Tải file về</li>
+            <li>Mở file JSON → Sao chép toàn bộ → Dán vào ô bên dưới</li>
+          </ol>
+        </div>
+        <div class="dvsec-form-group">
+          <label class="dvsec-form-label">Service Account JSON Key <span style="color:#c0392b">*</span></label>
+          <textarea id="mtSAInput" rows="5"
+            style="width:100%;padding:10px 12px;border-radius:10px;border:1.5px solid #e2e8f0;font-family:monospace;font-size:0.7rem;outline:none;resize:vertical;box-sizing:border-box;transition:border-color 0.15s"
+            onfocus="this.style.borderColor='#c0392b'"
+            onblur="this.style.borderColor='#e2e8f0'"
+            placeholder='{"type":"service_account","project_id":"...","private_key":"-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n","client_email":"...@....iam.gserviceaccount.com",...}'></textarea>
+          <div id="mtSAStatus" style="font-size:0.75rem;margin-top:5px;min-height:16px"></div>
+        </div>
+        <div style="display:flex;gap:8px">
+          <button onclick="mtTestSA()"
+            style="flex:1;padding:10px;border:1.5px solid #f59e0b;background:#fffbeb;color:#b45309;border-radius:10px;font-size:0.82rem;font-weight:700;cursor:pointer">
+            <i class="fas fa-vial"></i> Kiểm tra kết nối
+          </button>
+          <button onclick="dvSetupGoStep(2)"
+            style="flex:1;padding:10px;border:none;background:linear-gradient(135deg,#c0392b,#e74c3c);color:#fff;border-radius:10px;font-size:0.82rem;font-weight:700;cursor:pointer">
+            Tiếp theo <i class="fas fa-arrow-right"></i>
+          </button>
+        </div>
+      </div>
+
+      <!-- STEP 2: Google Sheet -->
+      <div id="dvSetupPanel2" style="display:none">
+        <div style="background:rgba(2,132,199,0.05);border-radius:10px;padding:12px;margin-bottom:14px;font-size:0.8rem;border:1px solid rgba(2,132,199,0.2)">
+          <div style="font-weight:700;color:#0369a1;margin-bottom:8px"><i class="fas fa-info-circle"></i> Hướng dẫn thiết lập Google Sheet</div>
+          <div style="display:flex;flex-direction:column;gap:6px;color:#64748b">
+            <div><span style="display:inline-flex;width:19px;height:19px;border-radius:50%;background:#0284c7;color:#fff;font-size:0.62rem;font-weight:800;align-items:center;justify-content:center;margin-right:5px">1</span>
+              Vào <a href="https://sheets.google.com" target="_blank" style="color:#0284c7;font-weight:600">sheets.google.com</a> → Tạo spreadsheet mới (trống)
+            </div>
+            <div><span style="display:inline-flex;width:19px;height:19px;border-radius:50%;background:#0284c7;color:#fff;font-size:0.62rem;font-weight:800;align-items:center;justify-content:center;margin-right:5px">2</span>
+              Nhấn <b>Chia sẻ</b> → thêm <b id="mtSAEmailHint" style="color:#dc2626;font-family:monospace;font-size:0.78rem">email-service-account</b> quyền <b>Chỉnh sửa</b>
+            </div>
+            <div><span style="display:inline-flex;width:19px;height:19px;border-radius:50%;background:#0284c7;color:#fff;font-size:0.62rem;font-weight:800;align-items:center;justify-content:center;margin-right:5px">3</span>
+              Copy ID từ URL: <code style="background:#f1f5f9;padding:1px 5px;border-radius:4px;font-size:0.72rem">docs.google.com/spreadsheets/d/<b style="color:#dc2626">ID</b>/edit</code>
+            </div>
+          </div>
+        </div>
+        <div class="dvsec-form-group">
+          <label class="dvsec-form-label">Spreadsheet ID <span style="color:#dc2626">* bắt buộc</span></label>
+          <input id="mtSheetIdInput" class="dvsec-form-control"
+            placeholder="Dán Spreadsheet ID vào đây..."
+            style="font-family:monospace;font-size:0.82rem;border-color:#f59e0b"
+            oninput="this.style.borderColor=this.value?'#16a34a':'#f59e0b'">
+          <div style="font-size:0.73rem;color:#f59e0b;margin-top:4px">
+            <i class="fas fa-exclamation-triangle"></i> Hệ thống sẽ tự tạo các sheet cần thiết trong spreadsheet này.
+          </div>
+        </div>
+        <div id="mtStep2Status" style="font-size:0.78rem;min-height:16px;margin-bottom:10px"></div>
+        <div style="display:flex;gap:8px">
+          <button onclick="dvSetupGoStep(1)"
+            style="padding:10px 14px;border:1.5px solid #e2e8f0;background:#f8fafc;color:#475569;border-radius:10px;font-size:0.82rem;font-weight:700;cursor:pointer">
+            <i class="fas fa-arrow-left"></i> Quay lại
+          </button>
+          <button onclick="mtValidateStep2()"
+            style="flex:1;padding:10px;border:none;background:linear-gradient(135deg,#c0392b,#e74c3c);color:#fff;border-radius:10px;font-size:0.82rem;font-weight:700;cursor:pointer">
+            Tiếp theo <i class="fas fa-arrow-right"></i>
+          </button>
+        </div>
+      </div>
+
+      <!-- STEP 3: Tài khoản Admin -->
+      <div id="dvSetupPanel3" style="display:none">
+        <div style="background:rgba(192,57,43,0.04);border-radius:10px;padding:12px;margin-bottom:14px;font-size:0.8rem;border:1px solid rgba(192,57,43,0.15)">
+          <div style="font-weight:700;color:#c0392b;margin-bottom:3px"><i class="fas fa-shield-alt"></i> Tài khoản Admin</div>
+          <div style="color:#64748b">Tài khoản quản trị hệ thống — có thể tạo mã mời và quản lý toàn bộ dữ liệu.</div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px">
+          <div>
+            <label class="dvsec-form-label">Tên đăng nhập <span style="color:#c0392b">*</span></label>
+            <input id="mtAdminUsername" class="dvsec-form-control" placeholder="VD: admin_bvps" style="font-size:0.9rem">
+          </div>
+          <div>
+            <label class="dvsec-form-label">Tên hiển thị <span style="color:#c0392b">*</span></label>
+            <input id="mtAdminDisplayName" class="dvsec-form-control" placeholder="VD: Bí thư Đoàn" style="font-size:0.9rem">
+          </div>
+        </div>
+        <div class="dvsec-form-group">
+          <label class="dvsec-form-label">Mã PIN (6 số) <span style="color:#c0392b">*</span></label>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+            <input type="password" id="mtAdminPIN" class="dvsec-form-control"
+              placeholder="● ● ● ● ● ●" maxlength="6" inputmode="numeric"
+              style="letter-spacing:8px;font-size:1.1rem;text-align:center"
+              oninput="this.value=this.value.replace(/[^0-9]/g,'')">
+            <input type="password" id="mtAdminPIN2" class="dvsec-form-control"
+              placeholder="Xác nhận PIN" maxlength="6" inputmode="numeric"
+              style="letter-spacing:8px;font-size:1.1rem;text-align:center"
+              oninput="this.value=this.value.replace(/[^0-9]/g,'')">
+          </div>
+          <div style="font-size:0.73rem;color:#dc2626;margin-top:4px">
+            <i class="fas fa-shield-alt"></i> Không có PIN mặc định — bắt buộc nhập để bảo mật
+          </div>
+        </div>
+        <div id="mtSetupStatus" style="font-size:0.8rem;margin-bottom:12px;min-height:18px"></div>
+        <div style="display:flex;gap:8px">
+          <button onclick="dvSetupGoStep(2)"
+            style="padding:10px 14px;border:1.5px solid #e2e8f0;background:#f8fafc;color:#475569;border-radius:10px;font-size:0.82rem;font-weight:700;cursor:pointer">
+            <i class="fas fa-arrow-left"></i> Quay lại
+          </button>
+          <button id="dvSetupFinishBtn" onclick="dvSecureDoAdminSetup()"
+            style="flex:1;padding:11px;border:none;background:linear-gradient(135deg,#c0392b,#e74c3c);color:#fff;border-radius:10px;font-size:0.88rem;font-weight:800;cursor:pointer;box-shadow:0 4px 14px rgba(192,57,43,0.35)">
+            <i class="fas fa-check-circle"></i> Hoàn tất thiết lập
+          </button>
+        </div>
+      </div>
+
+    </div>
+  </div>`;
+
+  document.body.appendChild(overlay);
+
+  // Ghi đè mtGoStep để update stepper mới
+  window.mtGoStep = dvSetupGoStep;
+  // Ghi đè mtValidateStep2 để dùng stepper mới
+  window.mtValidateStep2 = _dvValidateStep2;
+};
+
+/** Điều hướng bước trong form inline */
+window.dvSetupGoStep = function(step) {
+  [1, 2, 3].forEach(i => {
+    const panel = document.getElementById(`dvSetupPanel${i}`);
+    const btn   = document.getElementById(`dvSetupStep${i}Btn`);
+    if (panel) panel.style.display = i === step ? 'block' : 'none';
+    if (btn) {
+      if (i <= step) {
+        btn.style.background = 'linear-gradient(135deg,#c0392b,#e74c3c)';
+        btn.style.color = '#fff';
+        btn.disabled = false;
+      } else {
+        btn.style.background = 'transparent';
+        btn.style.color = '#94a3b8';
+        btn.disabled = true;
+      }
+      if (i === step) {
+        btn.style.boxShadow = '0 2px 8px rgba(192,57,43,0.3)';
+      } else {
+        btn.style.boxShadow = 'none';
+      }
+    }
+  });
+
+  // Khi sang bước 2: điền email SA vào hint
+  if (step === 2) {
+    try {
+      const sa = JSON.parse(document.getElementById('mtSAInput')?.value || '{}');
+      const hint = document.getElementById('mtSAEmailHint');
+      if (hint && sa.client_email) hint.textContent = sa.client_email;
+    } catch {}
   }
 };
 
-/**
- * Hook vào mtDoAdminSetup để sau khi hoàn tất:
- * 1. Đóng modal setup
- * 2. Refresh appState
- * 3. Hiển thị màn hình PIN đăng nhập
- */
-function _hookAdminSetupComplete() {
-  const origMtDo = window.mtDoAdminSetup;
-  if (typeof origMtDo !== 'function') return;
-
-  window.mtDoAdminSetup = async function() {
-    await origMtDo.apply(this, arguments);
-    // Sau khi setup hoàn tất, mtDoAdminSetup sẽ lưu config
-    // Ta dùng MutationObserver để biết khi modal đóng
-    _waitForSetupModalClose();
-  };
-}
-
-function _waitForSetupModalClose() {
-  const modal = document.getElementById('mtAdminSetupModal');
-  if (!modal) {
-    _onAdminSetupDone();
+/** Validate bước 2 — thay thế mtValidateStep2 gốc khi trong overlay */
+function _dvValidateStep2() {
+  const sheetId = document.getElementById('mtSheetIdInput')?.value.trim();
+  const status  = document.getElementById('mtStep2Status');
+  if (!sheetId) {
+    if (status) status.innerHTML = '<span style="color:#dc2626"><i class="fas fa-exclamation-triangle"></i> Vui lòng nhập Spreadsheet ID trước khi tiếp tục.</span>';
+    document.getElementById('mtSheetIdInput')?.focus();
     return;
   }
-  const observer = new MutationObserver(() => {
-    if (!document.getElementById('mtAdminSetupModal')) {
-      observer.disconnect();
-      _onAdminSetupDone();
-    }
-  });
-  observer.observe(document.body, { childList: true });
-}
-
-function _onAdminSetupDone() {
-  // Khôi phục mtDoAdminSetup gốc
-  const origMtDo = window._origMtDoAdminSetup;
-  if (origMtDo) window.mtDoAdminSetup = origMtDo;
-
-  _secAppState = _getAppState();
-  if (_secAppState.mode === 'MT_AUTH') {
-    // Có config hợp lệ → hiện màn hình PIN
-    dvSecureShowLogin();
-  } else {
-    // Setup chưa hoàn tất → hiện lại màn hình no-setup
-    const auth = document.getElementById('dvSecureAuth');
-    if (auth) {
-      const box = document.getElementById('dvSecureBox');
-      if (box) box.style.display = '';
-    } else {
-      dvSecureShowLogin();
-    }
+  if (sheetId.length < 20) {
+    if (status) status.innerHTML = '<span style="color:#dc2626"><i class="fas fa-times-circle"></i> ID không hợp lệ. Copy đúng phần ID từ URL.</span>';
+    return;
   }
+  if (status) status.innerHTML = '<span style="color:#16a34a"><i class="fas fa-check-circle"></i> Spreadsheet ID hợp lệ.</span>';
+  dvSetupGoStep(3);
 }
+
+/** Hoàn tất setup — delegate sang mtDoAdminSetup gốc nếu có, fallback tự xử lý */
+window.dvSecureDoAdminSetup = async function() {
+  if (typeof mtDoAdminSetup === 'function') {
+    // Restore mtGoStep gốc tạm thời để mtDoAdminSetup dùng đúng step panels
+    // (mtDoAdminSetup gốc gọi mtGoStep(2) khi thiếu sheetId)
+    const origGo = window.mtGoStep;
+    window.mtGoStep = dvSetupGoStep;
+
+    // Hook: sau khi mtDoAdminSetup xong thành công → chuyển sang PIN login
+    const origDo = window.mtDoAdminSetup;
+    window.mtDoAdminSetup = async function() {
+      await origDo.apply(this, arguments);
+      // Kiểm tra sau 2s (mtDoAdminSetup có setTimeout 1800ms rồi remove modal)
+      setTimeout(() => {
+        window.mtGoStep = origGo; // restore
+        _secAppState = _getAppState();
+        if (_secAppState.mode === 'MT_AUTH') {
+          dvSecureShowLogin();
+        }
+      }, 2200);
+    };
+    window.mtDoAdminSetup();
+    // Restore ngay sau call để tránh double-hook
+    window.mtDoAdminSetup = origDo;
+    return;
+  }
+
+  // Fallback: tự validate và lưu nếu mtDoAdminSetup chưa load
+  const saJson   = document.getElementById('mtSAInput')?.value.trim();
+  const sheetId  = document.getElementById('mtSheetIdInput')?.value.trim();
+  const username = document.getElementById('mtAdminUsername')?.value.trim();
+  const dispName = document.getElementById('mtAdminDisplayName')?.value.trim();
+  const pin      = document.getElementById('mtAdminPIN')?.value.trim();
+  const pin2     = document.getElementById('mtAdminPIN2')?.value.trim();
+  const status   = document.getElementById('mtSetupStatus');
+  const btn      = document.getElementById('dvSetupFinishBtn');
+
+  const setErr = (msg) => { if (status) status.innerHTML = `<span style="color:#dc2626"><i class="fas fa-exclamation-circle"></i> ${msg}</span>`; };
+
+  if (!saJson)   { setErr('Vui lòng cung cấp Service Account JSON (Bước 1)'); dvSetupGoStep(1); return; }
+  if (!sheetId)  { setErr('Vui lòng nhập Spreadsheet ID (Bước 2)'); dvSetupGoStep(2); return; }
+  if (!username) { setErr('Vui lòng nhập tên đăng nhập'); return; }
+  if (!dispName) { setErr('Vui lòng nhập tên hiển thị'); return; }
+  if (!pin || pin.length !== 6 || !/^\d{6}$/.test(pin)) { setErr('PIN phải là đúng 6 chữ số'); return; }
+  if (pin !== pin2) { setErr('Xác nhận PIN không khớp'); return; }
+
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Đang xử lý...'; }
+  if (status) status.innerHTML = '<span style="color:#0284c7"><i class="fas fa-spinner fa-spin"></i> Module chưa sẵn sàng. Thử tải lại trang.</span>';
+  if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-check-circle"></i> Hoàn tất thiết lập'; }
+};
 
 // ─────────────────────────────────────────────────────────────────────
 //  MÀN HÌNH: ĐỔI TÀI KHOẢN / ĐĂNG XUẤT
