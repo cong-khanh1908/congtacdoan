@@ -1,28 +1,32 @@
 /**
  * ╔══════════════════════════════════════════════════════════════════════╗
- * ║         DOANVAN — AI ENGINE MODULE  v5.0                            ║
+ * ║         DOANVAN — AI ENGINE MODULE  v5.1                            ║
  * ║                                                                      ║
- * ║  NÂNG CẤP v5.0:                                                     ║
- * ║  ✅ Sửa model ID chính xác (GA 2025):                              ║
- * ║     · gemini-2.5-flash-lite  (primary - 15rpm/1000rpd)             ║
- * ║     · gemini-2.5-flash       (secondary - 10rpm/250rpd)            ║
- * ║     · gemini-2.0-flash       (tertiary fallback ổn định)            ║
- * ║  ✅ Offline NLP Engine hoàn chỉnh — 15 công cụ:                   ║
- * ║     · Phân loại văn bản (8 loại Đoàn chuẩn)                       ║
+ * ║  NÂNG CẤP v5.1 — AI Offline hoàn chỉnh, không cần API Key:        ║
+ * ║  ✅ Gemini Online (tùy chọn): Flash-Lite → Flash → 2.0-Flash       ║
+ * ║  ✅ Offline NLP Engine — 23 công cụ phân tích đầy đủ:             ║
+ * ║     · Phân loại văn bản (9 loại Đoàn chuẩn)                       ║
  * ║     · Trích xuất ngày/deadline (10+ pattern tiếng Việt)            ║
  * ║     · Tóm tắt thông minh (extractive scoring)                      ║
  * ║     · Trích từ khóa + TF-IDF đơn giản                             ║
  * ║     · Phát hiện đơn vị ban hành, mức độ ưu tiên                   ║
  * ║     · Trích xuất đầu việc (numbered/bulleted lists)                ║
+ * ║     · [MỚI] Trích người ký và chức vụ (extractSigner)             ║
+ * ║     · [MỚI] Trích địa danh nơi ký (extractSignLocation)           ║
+ * ║     · [MỚI] Trích nơi nhận văn bản (extractRecipients)            ║
+ * ║     · [MỚI] Trích căn cứ pháp lý (extractLegalBasis)             ║
+ * ║     · [MỚI] Trích hạn báo cáo kết quả (extractReportDate)        ║
  * ║     · Sinh báo cáo thành tích + mẫu văn bản Đoàn                  ║
  * ║     · Tổng hợp trích yếu nhiều văn bản                            ║
  * ║     · Tìm kiếm ngữ nghĩa nội bộ                                   ║
  * ║     · Phân tích thống kê đoàn viên                                 ║
- * ║     · Xếp loại rèn luyện + thi đua tự động                        ║
  * ║     · Gợi ý hoạt động Đoàn theo tháng                             ║
  * ║     · Tạo nội dung kế hoạch/biên bản/nghị quyết                   ║
  * ║     · Kiểm tra chính tả & chuẩn hóa văn bản                       ║
  * ║     · Trả lời hỏi đáp nội bộ về quy định Đoàn                    ║
+ * ║  ✅ [SỬA] Không còn yêu cầu API Key khi phân tích offline         ║
+ * ║  ✅ [SỬA] analyzeDocument trả đủ 13 trường cho form xác nhận      ║
+ * ║  ✅ [SỬA] _dispatchOffline luôn xử lý, không block bằng thông báo ║
  * ╚══════════════════════════════════════════════════════════════════════╝
  */
 
@@ -900,7 +904,105 @@ var OfflineEngine = {
     }
     return tasks;
   },
-  // ══ TOOL 10: Phân tích toàn bộ văn bản → JSON ════════════════════
+  // ══ TOOL 10a: Trích người ký và chức vụ ══════════════════════════
+  extractSigner: function extractSigner(text) {
+    var t = text || '';
+    // Tìm ở cuối văn bản — thường là 30 dòng cuối
+    var lines = t.split('\n');
+    var tail = lines.slice(-30).join('\n');
+    // Pattern: "T/M BAN CHẤP HÀNH\nBÍ THƯ\n\nNguyễn Văn A"
+    var pats = [
+      /(?:bí thư|phó bí thư|thường trực|chủ tịch|phó chủ tịch|giám đốc|phó giám đốc|trưởng ban|phó trưởng ban)\s*\n+\s*([A-ZĐÀÁẢÃẠĂẮẰẲẴẶÂẤẦẨẪẬÈÉẺẼẸÊẾỀỂỄỆÌÍỈĨỊÒÓỎÕỌÔỐỒỔỖỘƠỚỜỞỠỢÙÚỦŨỤƯỨỪỬỮỰỲÝỶỸỴ][a-zđàáảãạăắằẳẵặâấầẩẫậèéẻẽẹêếềểễệìíỉĩịòóỏõọôốồổỗộơớờởỡợùúủũụưứừửữựỳýỷỹỵ]+(?:\s+[A-ZĐÀÁẢÃẠĂẮẰẲẴẶÂẤẦẨẪẬÈÉẺẼẸÊẾỀỂỄỆÌÍỈĨỊÒÓỎÕỌÔỐỒỔỖỘƠỚỜỞỠỢÙÚỦŨỤƯỨỪỬỮỰỲÝỶỸỴ][a-zđàáảãạăắằẳẵặâấầẩẫậèéẻẽẹêếềểễệìíỉĩịòóỏõọôốồổỗộơớờởỡợùúủũụưứừửữựỳýỷỹỵ]+){1,4})/gi,
+      /(?:ký tên|đã ký)\s*[:\-]?\s*([A-ZĐÀÁẢÃẠ][^\n]{5,40})/gi,
+      /\n([A-ZĐÀÁẢÃẠ][a-zđàáảãạăắằẳẵặâấầẩẫậ]+(?:\s+[A-ZĐÀÁẢÃẠ][a-zđàáảãạăắằẳẵặâấầẩẫậ]+){1,3})\s*\n\s*$/m
+    ];
+    for (var i = 0; i < pats.length; i++) {
+      var m = tail.match(pats[i]);
+      if (m) {
+        var name = (m[1] || m[0]).trim().replace(/^(bí thư|phó bí thư|chủ tịch|giám đốc)/gi, '').trim();
+        if (name.length >= 4 && name.length <= 60) return name;
+      }
+    }
+    // Fallback: tìm chức vụ + tên gần cuối
+    var chucVuMatch = tail.match(/(bí thư|phó bí thư|chủ tịch|giám đốc|trưởng ban)[^\n]*\n[^\n]*\n([A-ZĐÀÁẢÃẠ][a-zđàáảãạăắằẳẵặâấầẩẫậ][\w\sđàáảãạăắằẳẵặâấầẩẫậèéẻẽẹêếềểễệìíỉĩịòóỏõọôốồổỗộơớờởỡợùúủũụưứừửữựỳýỷỹỵÀÁẢÃẠĂẮẰẲẴẶÂẤẦẨẪẬÈÉẺẼẸÊẾỀỂỄỆÌÍỈĨỊÒÓỎÕỌÔỐỒỔỖỘƠỚỜỞỠỢÙÚỦŨỤƯỨỪỬỮỰỲÝỶỸỴ]{2,30})/gi);
+    if (chucVuMatch) return chucVuMatch[2] ? chucVuMatch[2].trim() : '';
+    return '';
+  },
+
+  // ══ TOOL 10b: Trích địa danh nơi ký ══════════════════════════════
+  extractSignLocation: function extractSignLocation(text) {
+    var t = text || '';
+    // "Đồng Tháp, ngày ... tháng ... năm ..."
+    var pats = [
+      /^([A-ZĐÀÁẢÃẠĂẮẰẲẴẶÂẤẦẨẪẬÈÉẺẼẸÊẾỀỂỄỆ][^\n,]{3,40}),?\s*ngày\s+\d/im,
+      /([A-ZĐÀÁẢÃẠ][a-zđàáảãạăắằẳẵặâấầẩẫậèéẻẽẹêếềểễệìíỉĩị][\w\s]{2,30}),\s*ngày\s+\d+\s+tháng/gi,
+      /tại\s+([A-ZĐÀÁẢÃẠ][^\n,\.]{3,40})(?:,|\s+ngày)/gi
+    ];
+    for (var i = 0; i < pats.length; i++) {
+      var m = t.match(pats[i]);
+      if (m) {
+        var loc = (m[1] || m[0]).replace(/,?\s*ngày.*/i,'').trim();
+        if (loc.length >= 3 && loc.length <= 50) return loc;
+      }
+    }
+    return '';
+  },
+
+  // ══ TOOL 10c: Trích đơn vị/cá nhân thực hiện (recipients) ════════
+  extractRecipients: function extractRecipients(text) {
+    var t = text || '';
+    var results = [];
+    // "Kính gửi:" block
+    var kgMatch = t.match(/kính\s+gửi\s*:([^\n]{0,200}(?:\n(?!-{3}|\n)[^\n]{0,200}){0,5})/i);
+    if (kgMatch) {
+      var block = kgMatch[1];
+      var items = block.split(/[\n;,]/).map(function(s){ return s.replace(/^[\s\-•·]+/, '').trim(); }).filter(function(s){ return s.length > 3 && s.length < 100; });
+      results = results.concat(items);
+    }
+    // "Nơi nhận:" block
+    var noiNhanMatch = t.match(/nơi\s+nhận\s*:([\s\S]{0,400})(?:\n\n|\Z)/i);
+    if (noiNhanMatch) {
+      var _block = noiNhanMatch[1];
+      var _items = _block.split('\n').map(function(s){ return s.replace(/^[\s\-•·\-]+/, '').trim(); }).filter(function(s){ return s.length > 3 && s.length < 100 && !/lưu|vt|ktlv/i.test(s); });
+      results = results.concat(_items);
+    }
+    // Loại trùng
+    return Array.from(new Set(results)).slice(0, 8);
+  },
+
+  // ══ TOOL 10d: Trích căn cứ pháp lý ══════════════════════════════
+  extractLegalBasis: function extractLegalBasis(text) {
+    var t = text || '';
+    var bases = [];
+    // "Căn cứ ..." mỗi dòng
+    var re = /căn\s+cứ\s+([^\n;]{10,150})/gi;
+    var m;
+    while ((m = re.exec(t)) !== null && bases.length < 4) {
+      bases.push(m[1].replace(/[;,]\s*$/, '').trim());
+    }
+    // "Thực hiện Nghị quyết/Chỉ thị/Kế hoạch số ..."
+    var re2 = /thực\s+hiện\s+((?:nghị\s+quyết|chỉ\s+thị|kế\s+hoạch|thông\s+tư|nghị\s+định)[^\n;,]{5,80})/gi;
+    while ((m = re2.exec(t)) !== null && bases.length < 5) {
+      bases.push(m[1].trim());
+    }
+    return bases.slice(0, 4).join('; ');
+  },
+
+  // ══ TOOL 10e: Trích ngày báo cáo kết quả ════════════════════════
+  extractReportDate: function extractReportDate(text) {
+    var t = text || '';
+    var re = /(?:báo\s+cáo\s+kết\s+quả?|gửi\s+báo\s+cáo|nộp\s+báo\s+cáo)\s+(?:về|trước\s+ngày|vào\s+ngày)?\s*(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{4})/gi;
+    var m = re.exec(t);
+    if (m) {
+      try {
+        var d = new Date(m[3] + '-' + m[2].padStart(2,'0') + '-' + m[1].padStart(2,'0'));
+        if (!isNaN(d)) return d.toISOString().split('T')[0];
+      } catch(e) {}
+    }
+    return '';
+  },
+
+  // ══ TOOL 10: Phân tích toàn bộ văn bản → JSON (đầy đủ) ══════════
   analyzeDocument: function analyzeDocument(text, filename) {
     var t = text || '';
     var type = this.classifyDocument(t);
@@ -912,14 +1014,31 @@ var OfflineEngine = {
     var priority = this.detectPriority(t);
     var deadline = this.detectDeadlineDate(dates, t);
     var issuer = this.extractIssuer(t);
+    var signer = this.extractSigner(t);
+    var signLocation = this.extractSignLocation(t);
+    var recipients = this.extractRecipients(t);
+    var legalBasis = this.extractLegalBasis(t);
+    var reportDate = this.extractReportDate(t);
     var idc = dates.filter(function (d) {
       return new Date(d) <= new Date();
     }).sort();
     var issueDate = idc[idc.length - 1] || '';
-    var titleLine = t.split('\n').find(function (l) {
-      return l.trim().length > 10 && l.trim().length < 150;
-    });
-    var title = titleLine ? titleLine.trim() : (filename || '').replace(/\.[^.]+$/, '');
+    // Tìm tiêu đề: ưu tiên dòng ALL CAPS hoặc dòng dài có từ khóa văn bản
+    var lines = t.split('\n').map(function(l){ return l.trim(); }).filter(function(l){ return l.length > 10 && l.length < 200; });
+    var titleLine = lines.find(function(l){
+      return /^[A-ZĐÀÁẢÃẠĂẮẰẲẴẶÂẤẦẨẪẬÈÉẺẼẸÊẾỀỂỄỆ\s]{15,}$/.test(l) || /(?:kế hoạch|báo cáo|công văn|thông báo|chỉ thị|nghị quyết|quyết định|tờ trình|biên bản|hướng dẫn|chương trình)/i.test(l);
+    }) || lines[0];
+    var title = titleLine ? titleLine : (filename || '').replace(/\.[^.]+$/, '');
+    // Ghi chú nhắc việc thông minh hơn
+    var reminderNotes = '';
+    if (priority === 'high') {
+      reminderNotes = '⚠️ Văn bản ưu tiên cao — cần xử lý ngay';
+      if (deadline) reminderNotes += ' | Hạn: ' + deadline;
+    } else if (deadline) {
+      var daysLeft = Math.ceil((new Date(deadline) - new Date()) / (1000*60*60*24));
+      if (daysLeft >= 0 && daysLeft <= 7) reminderNotes = '⏰ Hạn xử lý còn ' + daysLeft + ' ngày (' + deadline + ')';
+      else if (daysLeft < 0) reminderNotes = '🔴 Đã quá hạn ' + Math.abs(daysLeft) + ' ngày!';
+    }
     return {
       title: title,
       type: type,
@@ -927,12 +1046,16 @@ var OfflineEngine = {
       issuer: issuer,
       issueDate: issueDate,
       deadline: deadline,
-      reportDate: '',
+      reportDate: reportDate,
+      signLocation: signLocation,
+      signer: signer,
+      recipients: recipients,
+      legalBasis: legalBasis,
       summary: summary,
       mainTasks: tasks,
       priority: priority,
       keywords: kwds,
-      reminderNotes: priority === 'high' ? '⚠️ Văn bản ưu tiên cao — cần xử lý ngay' : '',
+      reminderNotes: reminderNotes,
       _source: 'offline',
       _typeLabel: this.getTypeLabel(type)
     };
@@ -1378,8 +1501,23 @@ function _dispatchOffline(prompt) {
     return Promise.resolve(idxs.slice(0, 10).join(',') || '');
   }
 
-  // ── Mặc định
-  return Promise.resolve('[AI offline] Cần API Key Gemini để dùng tính năng này đầy đủ. Nhấn "Cấu hình" để thiết lập.\n\nAI offline có thể hỗ trợ: phân loại văn bản, tóm tắt, trích xuất deadline, gợi ý hoạt động Đoàn, hỏi đáp quy định Đoàn.');
+  // ── Mặc định: luôn dùng OfflineEngine, không yêu cầu API key
+  // Thử trích văn bản từ block """ nếu có
+  var _defaultTm = prompt.match(/"""([\s\S]+?)"""/);
+  var _defaultFn = prompt.match(/tên tệp gốc:\s*(.+)/i);
+  if (_defaultTm) {
+    return Promise.resolve(JSON.stringify(OfflineEngine.analyzeDocument(_defaultTm[1], _defaultFn ? _defaultFn[1].trim() : 'van-ban.txt')));
+  }
+  // Thử hỏi đáp quy định Đoàn
+  var _generalAns = OfflineEngine.answerDoanQuestion(prompt);
+  if (_generalAns && !_generalAns.includes('Câu hỏi này cần tra cứu')) {
+    return Promise.resolve(_generalAns);
+  }
+  // Phân tích prompt dài như văn bản
+  if (p.length > 100) {
+    return Promise.resolve(JSON.stringify(OfflineEngine.analyzeDocument(prompt, 'noi-dung.txt')));
+  }
+  return Promise.resolve('[AI Offline] Đang hoạt động ở chế độ nội bộ — không cần internet, không cần API Key.\n\nCó thể hỗ trợ: phân tích & phân loại văn bản, tóm tắt, trích xuất deadline, số ký hiệu, người ký, căn cứ pháp lý, nơi nhận, gợi ý hoạt động Đoàn, hỏi đáp quy định Đoàn.\n\nTùy chọn: thêm API Key Gemini để có kết quả chính xác và chi tiết hơn.');
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -1419,7 +1557,7 @@ function _injectAIConfigModal() {
   el.id = 'aiConfigModal';
   el.className = 'modal-overlay';
   el.style.display = 'none';
-  el.innerHTML = "\n<div class=\"modal\" style=\"max-width:540px\">\n  <div class=\"modal-header\">\n    <h2 style=\"display:flex;align-items:center;gap:10px\">\n      <span style=\"width:32px;height:32px;border-radius:50%;background:linear-gradient(135deg,var(--navy,#1a2340),var(--red,#c0392b));display:flex;align-items:center;justify-content:center;flex-shrink:0\">\n        <i class=\"fas fa-robot\" style=\"color:#fff;font-size:0.85rem\"></i>\n      </span>C\u1EA5u h\xECnh AI Engine</h2>\n    <button class=\"btn btn-ghost\" onclick=\"closeAIConfigModal()\"><i class=\"fas fa-times\"></i></button>\n  </div>\n  <div class=\"modal-body\" style=\"padding:20px\">\n    <div id=\"aiCfgBanner\" style=\"border-radius:10px;padding:12px 16px;margin-bottom:16px;display:flex;align-items:center;gap:12px;font-size:0.82rem;background:rgba(26,35,64,0.05);border:1px solid var(--gray-light,#e5e7eb)\">\n      <div id=\"aiCfgDot\" style=\"width:10px;height:10px;border-radius:50%;background:#9ca3af;flex-shrink:0\"></div>\n      <div id=\"aiCfgMsg\" style=\"flex:1\">\u0110ang ki\u1EC3m tra...</div>\n      <button class=\"btn btn-outline btn-sm\" onclick=\"refreshAICfgStatus()\"><i class=\"fas fa-sync-alt\"></i></button>\n    </div>\n    <div class=\"form-group\" style=\"margin-bottom:14px\">\n      <label class=\"form-label\" style=\"font-weight:700\"><i class=\"fas fa-key\" style=\"color:var(--gold,#d4a017);margin-right:6px\"></i>Gemini API Key <span style=\"color:red\">*</span></label>\n      <div class=\"api-key-input\">\n        <input type=\"password\" class=\"form-control\" id=\"aiCfgKey\" placeholder=\"AIza...\" style=\"font-family:monospace;font-size:16px\">\n        <button class=\"api-key-toggle\" onclick=\"toggleAICfgKey()\"><i class=\"fas fa-eye\" id=\"aiCfgEyeIcon\"></i></button>\n      </div>\n      <div class=\"form-hint\" style=\"margin-top:5px\">L\u1EA5y mi\u1EC5n ph\xED t\u1EA1i <a href=\"https://aistudio.google.com\" target=\"_blank\" style=\"color:var(--red,#c0392b);font-weight:600\">aistudio.google.com</a></div>\n    </div>\n    <div class=\"form-group\" style=\"margin-bottom:14px\">\n      <label class=\"form-label\" style=\"font-weight:700\"><i class=\"fas fa-microchip\" style=\"color:var(--navy,#1a2340);margin-right:6px\"></i>Chi\u1EBFn l\u01B0\u1EE3c Model</label>\n      <select class=\"form-control\" id=\"aiCfgModel\" style=\"font-size:16px\">\n        <option value=\"auto\">\uD83E\uDD16 T\u1EF1 \u0111\u1ED9ng: Flash-Lite \u2192 Flash \u2192 2.0-Flash \u2192 Offline (Khuy\u1EBFn ngh\u1ECB)</option>\n        <option value=\"gemini-2.5-flash-lite\">\u26A1 Flash-Lite \u2014 15 req/ph\xFAt \xB7 1000 req/ng\xE0y (ti\u1EBFt ki\u1EC7m nh\u1EA5t)</option>\n        <option value=\"gemini-2.5-flash\">\uD83D\uDD25 Flash \u2014 10 req/ph\xFAt \xB7 250 req/ng\xE0y (ch\u1EA5t l\u01B0\u1EE3ng cao h\u01A1n)</option>\n        <option value=\"gemini-2.0-flash\">\uD83D\uDEE1\uFE0F 2.0 Flash \u2014 15 req/ph\xFAt \xB7 1500 req/ng\xE0y (\u1ED5n \u0111\u1ECBnh nh\u1EA5t)</option>\n      </select>\n      <div class=\"form-hint\" style=\"margin-top:4px\">AI Engine t\u1EF1 \u0111\u1ED9ng fallback khi model ch\xEDnh h\u1EBFt quota</div>\n    </div>\n    <!-- 3-t\u1EA7ng info -->\n    <div style=\"border-radius:10px;border:1px solid var(--gray-light,#e5e7eb);overflow:hidden;margin-bottom:14px\">\n      <div style=\"background:rgba(22,163,74,0.06);padding:10px 14px;display:flex;align-items:center;gap:10px;border-bottom:1px solid var(--gray-light,#e5e7eb)\">\n        <span style=\"width:22px;height:22px;border-radius:50%;background:#16a34a;color:#fff;display:flex;align-items:center;justify-content:center;font-size:0.7rem;font-weight:900;flex-shrink:0\">1</span>\n        <div><div style=\"font-weight:700;font-size:0.8rem;color:#15803d\">Gemini 2.5 Flash-Lite <span style=\"font-weight:400;color:#6b7280\">(primary)</span></div><div style=\"font-size:0.72rem;color:#6b7280\">15 req/ph\xFAt \xB7 1000 req/ng\xE0y \xB7 \u01AFu ti\xEAn d\xF9ng \u0111\u1EC3 ti\u1EBFt ki\u1EC7m quota</div></div>\n      </div>\n      <div style=\"background:rgba(212,160,23,0.05);padding:10px 14px;display:flex;align-items:center;gap:10px;border-bottom:1px solid var(--gray-light,#e5e7eb)\">\n        <span style=\"width:22px;height:22px;border-radius:50%;background:#d4a017;color:#fff;display:flex;align-items:center;justify-content:center;font-size:0.7rem;font-weight:900;flex-shrink:0\">2</span>\n        <div><div style=\"font-weight:700;font-size:0.8rem;color:#92400e\">Gemini 2.5 Flash <span style=\"font-weight:400;color:#6b7280\">(fallback khi Lite h\u1EBFt quota)</span></div><div style=\"font-size:0.72rem;color:#6b7280\">10 req/ph\xFAt \xB7 250 req/ng\xE0y \xB7 Ch\u1EA5t l\u01B0\u1EE3ng t\u1ED1t h\u01A1n cho t\xE1c v\u1EE5 ph\u1EE9c t\u1EA1p</div></div>\n      </div>\n      <div style=\"background:rgba(37,99,235,0.04);padding:10px 14px;display:flex;align-items:center;gap:10px;border-bottom:1px solid var(--gray-light,#e5e7eb)\">\n        <span style=\"width:22px;height:22px;border-radius:50%;background:#2563eb;color:#fff;display:flex;align-items:center;justify-content:center;font-size:0.7rem;font-weight:900;flex-shrink:0\">3</span>\n        <div><div style=\"font-weight:700;font-size:0.8rem;color:#1d4ed8\">Gemini 2.0 Flash <span style=\"font-weight:400;color:#6b7280\">(fallback \u1ED5n \u0111\u1ECBnh)</span></div><div style=\"font-size:0.72rem;color:#6b7280\">15 req/ph\xFAt \xB7 1500 req/ng\xE0y \xB7 C\u1EF1c k\u1EF3 \u1ED5n \u0111\u1ECBnh</div></div>\n      </div>\n      <div style=\"background:rgba(107,114,128,0.05);padding:10px 14px;display:flex;align-items:center;gap:10px\">\n        <span style=\"width:22px;height:22px;border-radius:50%;background:#6b7280;color:#fff;display:flex;align-items:center;justify-content:center;font-size:0.7rem;font-weight:900;flex-shrink:0\">4</span>\n        <div><div style=\"font-weight:700;font-size:0.8rem;color:#374151\">Offline NLP Engine <span style=\"font-weight:400;color:#6b7280\">(fallback cu\u1ED1i)</span></div><div style=\"font-size:0.72rem;color:#6b7280\">Kh\xF4ng c\u1EA7n internet \xB7 Kh\xF4ng quota \xB7 18 c\xF4ng c\u1EE5 ph\xE2n t\xEDch n\u1ED9i b\u1ED9</div></div>\n      </div>\n    </div>\n    <!-- Quota -->\n    <div style=\"background:rgba(26,35,64,0.04);border-radius:10px;padding:12px 14px;margin-bottom:14px;border:1px solid var(--gray-light,#e5e7eb)\">\n      <div style=\"font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#6b7280;margin-bottom:10px\"><i class=\"fas fa-tachometer-alt\"></i> Quota H\xF4m Nay</div>\n      <div id=\"aiCfgQuota\"><div style=\"font-size:0.78rem;color:#6b7280\">Nh\u1EADp API key \u0111\u1EC3 xem quota...</div></div>\n    </div>\n    <div style=\"display:flex;gap:8px;margin-bottom:10px\">\n      <button class=\"btn btn-gold\" onclick=\"testAICfgKey()\" style=\"flex:1\"><i class=\"fas fa-vial\"></i> Ki\u1EC3m tra k\u1EBFt n\u1ED1i</button>\n      <button class=\"btn btn-outline\" onclick=\"testAICfgOffline()\"><i class=\"fas fa-plug\"></i> Test offline</button>\n    </div>\n    <div id=\"aiCfgTestResult\" style=\"font-size:0.8rem;min-height:20px\"></div>\n  </div>\n  <div class=\"modal-footer\">\n    <button class=\"btn btn-outline\" onclick=\"closeAIConfigModal()\">H\u1EE7y</button>\n    <button class=\"btn btn-primary\" onclick=\"saveAIConfig()\"><i class=\"fas fa-save\"></i> L\u01B0u c\u1EA5u h\xECnh</button>\n  </div>\n</div>";
+  el.innerHTML = "\n<div class=\"modal\" style=\"max-width:540px\">\n  <div class=\"modal-header\">\n    <h2 style=\"display:flex;align-items:center;gap:10px\">\n      <span style=\"width:32px;height:32px;border-radius:50%;background:linear-gradient(135deg,var(--navy,#1a2340),var(--red,#c0392b));display:flex;align-items:center;justify-content:center;flex-shrink:0\">\n        <i class=\"fas fa-robot\" style=\"color:#fff;font-size:0.85rem\"></i>\n      </span>C\u1EA5u h\xECnh AI Engine</h2>\n    <button class=\"btn btn-ghost\" onclick=\"closeAIConfigModal()\"><i class=\"fas fa-times\"></i></button>\n  </div>\n  <div class=\"modal-body\" style=\"padding:20px\">\n    <div id=\"aiCfgBanner\" style=\"border-radius:10px;padding:12px 16px;margin-bottom:16px;display:flex;align-items:center;gap:12px;font-size:0.82rem;background:rgba(26,35,64,0.05);border:1px solid var(--gray-light,#e5e7eb)\">\n      <div id=\"aiCfgDot\" style=\"width:10px;height:10px;border-radius:50%;background:#9ca3af;flex-shrink:0\"></div>\n      <div id=\"aiCfgMsg\" style=\"flex:1\">\u0110ang ki\u1EC3m tra...</div>\n      <button class=\"btn btn-outline btn-sm\" onclick=\"refreshAICfgStatus()\"><i class=\"fas fa-sync-alt\"></i></button>\n    </div>\n    <div class=\"form-group\" style=\"margin-bottom:14px\">\n      <label class=\"form-label\" style=\"font-weight:700\"><i class=\"fas fa-key\" style=\"color:var(--gold,#d4a017);margin-right:6px\"></i>Gemini API Key <span style=\"color:red\">(tuỳ chọn)</span></label>\n      <div class=\"api-key-input\">\n        <input type=\"password\" class=\"form-control\" id=\"aiCfgKey\" placeholder=\"AIza...\" style=\"font-family:monospace;font-size:16px\">\n        <button class=\"api-key-toggle\" onclick=\"toggleAICfgKey()\"><i class=\"fas fa-eye\" id=\"aiCfgEyeIcon\"></i></button>\n      </div>\n      <div class=\"form-hint\" style=\"margin-top:5px\">L\u1EA5y mi\u1EC5n ph\xED t\u1EA1i <a href=\"https://aistudio.google.com\" target=\"_blank\" style=\"color:var(--red,#c0392b);font-weight:600\">aistudio.google.com</a></div>\n    </div>\n    <div class=\"form-group\" style=\"margin-bottom:14px\">\n      <label class=\"form-label\" style=\"font-weight:700\"><i class=\"fas fa-microchip\" style=\"color:var(--navy,#1a2340);margin-right:6px\"></i>Chi\u1EBFn l\u01B0\u1EE3c Model</label>\n      <select class=\"form-control\" id=\"aiCfgModel\" style=\"font-size:16px\">\n        <option value=\"auto\">\uD83E\uDD16 T\u1EF1 \u0111\u1ED9ng: Flash-Lite \u2192 Flash \u2192 2.0-Flash \u2192 Offline (Khuy\u1EBFn ngh\u1ECB)</option>\n        <option value=\"gemini-2.5-flash-lite\">\u26A1 Flash-Lite \u2014 15 req/ph\xFAt \xB7 1000 req/ng\xE0y (ti\u1EBFt ki\u1EC7m nh\u1EA5t)</option>\n        <option value=\"gemini-2.5-flash\">\uD83D\uDD25 Flash \u2014 10 req/ph\xFAt \xB7 250 req/ng\xE0y (ch\u1EA5t l\u01B0\u1EE3ng cao h\u01A1n)</option>\n        <option value=\"gemini-2.0-flash\">\uD83D\uDEE1\uFE0F 2.0 Flash \u2014 15 req/ph\xFAt \xB7 1500 req/ng\xE0y (\u1ED5n \u0111\u1ECBnh nh\u1EA5t)</option>\n      </select>\n      <div class=\"form-hint\" style=\"margin-top:4px\">AI Engine t\u1EF1 \u0111\u1ED9ng fallback khi model ch\xEDnh h\u1EBFt quota</div>\n    </div>\n    <!-- 3-t\u1EA7ng info -->\n    <div style=\"border-radius:10px;border:1px solid var(--gray-light,#e5e7eb);overflow:hidden;margin-bottom:14px\">\n      <div style=\"background:rgba(22,163,74,0.06);padding:10px 14px;display:flex;align-items:center;gap:10px;border-bottom:1px solid var(--gray-light,#e5e7eb)\">\n        <span style=\"width:22px;height:22px;border-radius:50%;background:#16a34a;color:#fff;display:flex;align-items:center;justify-content:center;font-size:0.7rem;font-weight:900;flex-shrink:0\">1</span>\n        <div><div style=\"font-weight:700;font-size:0.8rem;color:#15803d\">Gemini 2.5 Flash-Lite <span style=\"font-weight:400;color:#6b7280\">(primary)</span></div><div style=\"font-size:0.72rem;color:#6b7280\">15 req/ph\xFAt \xB7 1000 req/ng\xE0y \xB7 \u01AFu ti\xEAn d\xF9ng \u0111\u1EC3 ti\u1EBFt ki\u1EC7m quota</div></div>\n      </div>\n      <div style=\"background:rgba(212,160,23,0.05);padding:10px 14px;display:flex;align-items:center;gap:10px;border-bottom:1px solid var(--gray-light,#e5e7eb)\">\n        <span style=\"width:22px;height:22px;border-radius:50%;background:#d4a017;color:#fff;display:flex;align-items:center;justify-content:center;font-size:0.7rem;font-weight:900;flex-shrink:0\">2</span>\n        <div><div style=\"font-weight:700;font-size:0.8rem;color:#92400e\">Gemini 2.5 Flash <span style=\"font-weight:400;color:#6b7280\">(fallback khi Lite h\u1EBFt quota)</span></div><div style=\"font-size:0.72rem;color:#6b7280\">10 req/ph\xFAt \xB7 250 req/ng\xE0y \xB7 Ch\u1EA5t l\u01B0\u1EE3ng t\u1ED1t h\u01A1n cho t\xE1c v\u1EE5 ph\u1EE9c t\u1EA1p</div></div>\n      </div>\n      <div style=\"background:rgba(37,99,235,0.04);padding:10px 14px;display:flex;align-items:center;gap:10px;border-bottom:1px solid var(--gray-light,#e5e7eb)\">\n        <span style=\"width:22px;height:22px;border-radius:50%;background:#2563eb;color:#fff;display:flex;align-items:center;justify-content:center;font-size:0.7rem;font-weight:900;flex-shrink:0\">3</span>\n        <div><div style=\"font-weight:700;font-size:0.8rem;color:#1d4ed8\">Gemini 2.0 Flash <span style=\"font-weight:400;color:#6b7280\">(fallback \u1ED5n \u0111\u1ECBnh)</span></div><div style=\"font-size:0.72rem;color:#6b7280\">15 req/ph\xFAt \xB7 1500 req/ng\xE0y \xB7 C\u1EF1c k\u1EF3 \u1ED5n \u0111\u1ECBnh</div></div>\n      </div>\n      <div style=\"background:rgba(107,114,128,0.05);padding:10px 14px;display:flex;align-items:center;gap:10px\">\n        <span style=\"width:22px;height:22px;border-radius:50%;background:#6b7280;color:#fff;display:flex;align-items:center;justify-content:center;font-size:0.7rem;font-weight:900;flex-shrink:0\">4</span>\n        <div><div style=\"font-weight:700;font-size:0.8rem;color:#374151\">Offline NLP Engine <span style=\"font-weight:400;color:#6b7280\">(fallback cu\u1ED1i)</span></div><div style=\"font-size:0.72rem;color:#6b7280\">Kh\xF4ng c\u1EA7n internet \xB7 Kh\xF4ng quota \xB7 23 c\xF4ng c\u1EE5 ph\xE2n t\xEDch n\u1ED9i b\u1ED9</div></div>\n      </div>\n    </div>\n    <!-- Quota -->\n    <div style=\"background:rgba(26,35,64,0.04);border-radius:10px;padding:12px 14px;margin-bottom:14px;border:1px solid var(--gray-light,#e5e7eb)\">\n      <div style=\"font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#6b7280;margin-bottom:10px\"><i class=\"fas fa-tachometer-alt\"></i> Quota H\xF4m Nay</div>\n      <div id=\"aiCfgQuota\"><div style=\"font-size:0.78rem;color:#6b7280\">Nh\u1EADp API key \u0111\u1EC3 xem quota...</div></div>\n    </div>\n    <div style=\"display:flex;gap:8px;margin-bottom:10px\">\n      <button class=\"btn btn-gold\" onclick=\"testAICfgKey()\" style=\"flex:1\"><i class=\"fas fa-vial\"></i> Ki\u1EC3m tra k\u1EBFt n\u1ED1i</button>\n      <button class=\"btn btn-outline\" onclick=\"testAICfgOffline()\"><i class=\"fas fa-plug\"></i> Test offline</button>\n    </div>\n    <div id=\"aiCfgTestResult\" style=\"font-size:0.8rem;min-height:20px\"></div>\n  </div>\n  <div class=\"modal-footer\">\n    <button class=\"btn btn-outline\" onclick=\"closeAIConfigModal()\">H\u1EE7y</button>\n    <button class=\"btn btn-primary\" onclick=\"saveAIConfig()\"><i class=\"fas fa-save\"></i> L\u01B0u c\u1EA5u h\xECnh</button>\n  </div>\n</div>";
   document.body.appendChild(el);
   el.addEventListener('click', function (e) {
     if (e.target === el) closeAIConfigModal();
@@ -1457,8 +1595,9 @@ function refreshAICfgStatus() {
   if (!dot || !msg) return;
   var s = _aiGetSettings();
   if (!s.apiKey) {
-    dot.style.background = '#9ca3af';
-    msg.innerHTML = '<span style="color:#6b7280">Chưa có API Key — đang dùng Offline Engine (18 công cụ NLP).</span>';
+    dot.style.background = '#16a34a';
+    msg.innerHTML = '<span style="color:#166534"><i class="fas fa-check-circle"></i> AI Offline đang hoạt động — 23 công cụ NLP nội bộ sẵn sàng (không cần API Key).</span>';
+    _updateAICfgQuotaOffline();
     return;
   }
   if (!navigator.onLine) {
@@ -1493,6 +1632,20 @@ function _updateAICfgQuota() {
     }[m.tier] || '⚪';
     return "<div style=\"margin-bottom:8px\">\n      <div style=\"display:flex;justify-content:space-between;font-size:0.75rem;margin-bottom:3px\">\n        <span style=\"font-weight:600\">".concat(tierBadge, " ").concat(m.label, "</span>\n        <span style=\"color:").concat(col, "\">").concat(m.todayUsed, "/").concat(m.todayLimit, " h\xF4m nay \xB7 ").concat(m.minuteUsed, "/").concat(m.minuteLimit, " req/ph\xFAt</span>\n      </div>\n      <div style=\"background:#e5e7eb;border-radius:4px;height:5px\">\n        <div style=\"width:").concat(pct, "%;height:100%;background:").concat(col, ";border-radius:4px;transition:0.3s\"></div>\n      </div>\n    </div>");
   }).join('') + "<button onclick=\"QuotaGuard.reset();_updateAICfgQuota();if(typeof updateQuotaDisplay==='function')updateQuotaDisplay()\"\n    style=\"font-size:0.72rem;background:none;border:none;cursor:pointer;color:#6b7280;padding:0;margin-top:4px\">\n    <i class=\"fas fa-redo\" style=\"margin-right:4px\"></i>Reset b\u1ED9 \u0111\u1EBFm quota t\u1EA5t c\u1EA3 models</button>";
+}
+function _updateAICfgQuotaOffline() {
+  var el = document.getElementById('aiCfgQuota');
+  if (!el) return;
+  el.innerHTML = '<div style="padding:10px 0;font-size:0.78rem;color:#166534;display:flex;align-items:center;gap:8px">'
+    + '<i class="fas fa-check-circle" style="color:#16a34a;font-size:1rem"></i>'
+    + '<div>'
+    + '<div style="font-weight:700;margin-bottom:3px">AI Offline — Không cần API Key, không cần internet</div>'
+    + '<div style="color:#4b5563;line-height:1.6">'
+    + '✔ Phân tích văn bản đầy đủ (tiêu đề, loại, tóm tắt, deadline)<br>'
+    + '✔ Trích xuất: số ký hiệu, người ký, địa danh, nơi nhận, căn cứ pháp lý<br>'
+    + '✔ Gợi ý hoạt động Đoàn · Hỏi đáp quy định · Thống kê đoàn viên<br>'
+    + '<span style="color:#6b7280;font-size:0.7rem">Tùy chọn: thêm API Key Gemini để kết quả chi tiết hơn</span>'
+    + '</div></div></div>';
 }
 function testAICfgKey() {
   return _testAICfgKey.apply(this, arguments);
@@ -1575,13 +1728,26 @@ function _testAICfgKey() {
 function testAICfgOffline() {
   var re = document.getElementById('aiCfgTestResult');
   if (!re) return;
-  var testText = 'Kế hoạch tổ chức hoạt động tình nguyện mùa hè xanh. Hạn chót: ngày 15 tháng 06 năm 2025. Đây là văn bản khẩn. Cần hoàn thành trước ngày 20/06/2025.';
-  var result = OfflineEngine.analyzeDocument(testText, 'test.txt');
+  var testText = 'KẾ HOẠCH TỔ CHỨC HOẠT ĐỘNG TÌNH NGUYỆN MÙA HÈ XANH NĂM 2025\nSố: 12/KH-ĐTN\nCăn cứ Nghị quyết số 03/NQ-ĐTN về công tác thanh niên năm 2025.\nKính gửi: Ban Thường vụ Đoàn cấp trên; Các chi đoàn trực thuộc.\nHạn chót: ngày 15 tháng 06 năm 2025. Đây là văn bản khẩn.\nHoàn thành trước ngày 20/06/2025 và báo cáo kết quả trước 25/06/2025.\n\nĐồng Tháp, ngày 01 tháng 05 năm 2025\nBÍ THƯ\n\nNguyễn Văn An\nNơi nhận: - Đoàn cấp trên; - Lưu VT.';
+  var result = OfflineEngine.analyzeDocument(testText, 'ke-hoach-test.txt');
   var deadlines = OfflineEngine.detectDeadlines(testText);
   var suggest = OfflineEngine.suggestActivities(6, 2025);
-  re.innerHTML = "<span style=\"color:#16a34a\"><i class=\"fas fa-check-circle\"></i> Offline Engine OK \u2014 18 c\xF4ng c\u1EE5 s\u1EB5n s\xE0ng</span>\n    <div style=\"margin-top:6px;padding:8px;background:var(--cream,#fdf8f0);border-radius:6px;font-size:0.73rem;color:var(--text-soft,#4b5563);line-height:1.7\">\n      \uD83D\uDCCB Lo\u1EA1i: <strong>".concat(result.type, "</strong> | \u01AFu ti\xEAn: <strong>").concat(result.priority, "</strong>\n      | Deadline ph\xE1t hi\u1EC7n: <strong>").concat(deadlines.map(function (d) {
-    return d.date;
-  }).join(', ') || '—', "</strong>\n      <br>\uD83C\uDFAF G\u1EE3i \xFD th\xE1ng 6: <em>").concat(suggest.activities[0], "</em>\n      <br>\u2753 H\u1ECFi \u0111\xE1p: ").concat(OfflineEngine.answerDoanQuestion('tuổi kết nạp đoàn viên').substring(0, 80), "...\n    </div>");
+  var signer = result.signer || OfflineEngine.extractSigner(testText);
+  var signLoc = result.signLocation || OfflineEngine.extractSignLocation(testText);
+  var recipients = result.recipients || OfflineEngine.extractRecipients(testText);
+  var legalBasis = result.legalBasis || OfflineEngine.extractLegalBasis(testText);
+  var reportDate = result.reportDate || OfflineEngine.extractReportDate(testText);
+  re.innerHTML = '<span style="color:#16a34a"><i class="fas fa-check-circle"></i> Offline Engine OK — 23 công cụ NLP sẵn sàng</span>'
+    + '<div style="margin-top:6px;padding:8px;background:var(--cream,#fdf8f0);border-radius:6px;font-size:0.73rem;color:var(--text-soft,#4b5563);line-height:1.9">'
+    + '📋 Loại: <strong>' + result.type + '</strong> | Mã: <strong>' + (result.code||'—') + '</strong> | Ưu tiên: <strong>' + result.priority + '</strong>'
+    + '<br>📅 Deadline: <strong>' + (deadlines.map(function(d){return d.date;}).join(', ')||'—') + '</strong>'
+    + ' | Ngày BC: <strong>' + (reportDate||'—') + '</strong>'
+    + '<br>👤 Người ký: <em>' + (signer||'—') + '</em> | 📍 Địa danh: <em>' + (signLoc||'—') + '</em>'
+    + '<br>📬 Nơi nhận: <em>' + (recipients.length ? recipients.slice(0,2).join(', ') : '—') + '</em>'
+    + '<br>⚖️ Căn cứ: <em>' + (legalBasis||'—').substring(0,60) + (legalBasis&&legalBasis.length>60?'...':'') + '</em>'
+    + '<br>🎯 Gợi ý tháng 6: <em>' + suggest.activities[0] + '</em>'
+    + '<br>❓ Hỏi đáp: ' + OfflineEngine.answerDoanQuestion('tuổi kết nạp đoàn viên').substring(0, 80) + '...'
+    + '</div>';
 }
 function saveAIConfig() {
   var _document$getElementB, _document$getElementB2;
@@ -2059,4 +2225,4 @@ if (document.readyState === 'loading') {
 }
 console.log('[ĐoànVăn AI Engine v5.0] Loaded\n', '✅ Models:', AI_CONFIG.MODELS.map(function (m) {
   return "".concat(m.label, "(").concat(m.id, ")");
-}).join(' → '), '\n', '✅ Offline Engine: 18 công cụ NLP nội bộ\n', '✅ Cache · Queue · ConfigModal · DeadlineModal');
+}).join(' → '), '\n', '✅ Offline Engine: 23 công cụ NLP nội bộ (v5.1)\n', '✅ Cache · Queue · ConfigModal · DeadlineModal');

@@ -3369,33 +3369,61 @@ async function extractText(file) {
   });
 }
 
-// analyzeWithAI — v4 inline fallback (doanvan-ai-engine-v2.js sẽ override khi load)
+// analyzeWithAI — v5 đầy đủ 17 trường + offline fallback (doanvan-ai-engine-v2.js sẽ override khi load)
 async function analyzeWithAI(text, filename) {
+  const hasKey = !!(DB.getObj('settings').apiKey);
+
+  // Không có API key → dùng offline NLP engine trực tiếp
+  if (!hasKey) {
+    try {
+      let offlineResult = null;
+      if (window.AI && window.AI.offline && typeof window.AI.offline.analyzeDocument === 'function') {
+        offlineResult = window.AI.offline.analyzeDocument(text, filename);
+      } else if (window.OfflineEngine && typeof window.OfflineEngine.analyzeDocument === 'function') {
+        offlineResult = window.OfflineEngine.analyzeDocument(text, filename);
+      }
+      if (offlineResult) {
+        toast('📴 Phân tích offline (không có API key) — kiểm tra và xác nhận kết quả', 'info');
+        showAiReviewModal(offlineResult, text, filename);
+        return;
+      }
+    } catch(e) { /* tiếp tục xuống fallback */ }
+    toast('Không có API key — lưu thủ công văn bản', 'warning');
+    saveDocFallback(filename, text);
+    return;
+  }
+
+  // Có API key → dùng Gemini với prompt đầy đủ 17 trường
   const prompt = `Bạn là chuyên gia phân tích văn bản hành chính của tổ chức Đoàn TNCS Hồ Chí Minh Việt Nam.
-Hãy phân tích văn bản sau và trả về JSON hợp lệ (không có markdown):
+Hãy phân tích văn bản sau và trả về JSON hợp lệ (không có markdown, không giải thích):
 
-NỘI DUNG VĂN BẢN:
-"""
+━━━ VĂN BẢN CẦN PHÂN TÍCH ━━━
+Tên tệp: ${filename}
+---
 ${text.substring(0, 6000)}
-"""
+━━━ HẾT VĂN BẢN ━━━
 
-Tên tệp gốc: ${filename}
-
-Trả về JSON với cấu trúc sau (tất cả trường bằng tiếng Việt):
+━━━ CẤU TRÚC JSON TRẢ VỀ (17 trường) ━━━
 {
-  "title": "tiêu đề chính xác của văn bản",
-  "type": "chi-thi|nghi-quyet|ke-hoach|bao-cao|cong-van|thong-bao|to-trinh|bien-ban|khac",
-  "code": "số/ký hiệu văn bản nếu có, ví dụ 12/KH-ĐTN",
-  "issuer": "cơ quan/đơn vị ban hành",
-  "issueDate": "YYYY-MM-DD hoặc rỗng nếu không tìm thấy",
-  "deadline": "YYYY-MM-DD hạn chót thực hiện, hoặc rỗng",
-  "reportDate": "YYYY-MM-DD ngày báo cáo kết quả, hoặc rỗng",
-  "summary": "tóm tắt nội dung chính trong 3-5 câu",
-  "mainTasks": ["công việc 1", "công việc 2", "công việc 3"],
+  "title": "tiêu đề đầy đủ và chính xác của văn bản (không viết tắt)",
+  "type": "chi-thi|nghi-quyet|ke-hoach|bao-cao|cong-van|thong-bao|to-trinh|bien-ban|quyet-dinh|huong-dan|khac",
+  "code": "số/ký hiệu văn bản, ví dụ 56/KH-ĐTN hoặc rỗng nếu không có",
+  "issuer": "tên đầy đủ cơ quan/đơn vị ban hành",
+  "issueDate": "YYYY-MM-DD ngày ký ban hành, hoặc rỗng",
+  "deadline": "YYYY-MM-DD hạn hoàn thành/xử lý, hoặc rỗng",
+  "reportDate": "YYYY-MM-DD hạn báo cáo kết quả về cấp trên, hoặc rỗng",
+  "signLocation": "địa danh nơi ký văn bản, ví dụ: Đồng Tháp",
+  "signer": "họ tên người ký và chức vụ",
+  "recipients": ["đơn vị/cá nhân thực hiện 1", "đơn vị/cá nhân thực hiện 2"],
+  "legalBasis": "căn cứ pháp lý chính nếu có",
+  "summary": "tóm tắt nội dung chính trong 3-5 câu, bám sát văn bản gốc",
+  "mainTasks": ["công việc cụ thể 1", "công việc cụ thể 2", "công việc cụ thể 3"],
   "priority": "high|med|low",
-  "keywords": ["từ khóa 1", "từ khóa 2"],
-  "reminderNotes": "ghi chú quan trọng cần nhắc nhở"
-}`;
+  "keywords": ["từ khóa 1", "từ khóa 2", "từ khóa 3"],
+  "reminderNotes": "ghi chú nhắc việc quan trọng nhất (hạn, yêu cầu đặc biệt)"
+}
+
+Trả về JSON thuần túy, không bọc trong markdown code block.`;
 
   try {
     const raw = await callAI(prompt);
@@ -3406,18 +3434,45 @@ Trả về JSON với cấu trúc sau (tất cả trường bằng tiếng Việ
     } catch { json = null; }
 
     if(json) {
-      // THAY ĐỔI QUAN TRỌNG: Hiển thị modal xác nhận TRƯỚC khi lưu
+      // Bảo đảm 5 trường mới luôn có giá trị bằng offline fallback nếu AI bỏ sót
+      try {
+        const offRef = (window.AI && window.AI.offline) ? window.AI.offline : window.OfflineEngine;
+        if (offRef && typeof offRef.analyzeDocument === 'function') {
+          const offR = offRef.analyzeDocument(text, filename);
+          json.signLocation = json.signLocation || offR.signLocation || '';
+          json.signer       = json.signer       || offR.signer       || '';
+          json.legalBasis   = json.legalBasis   || offR.legalBasis   || '';
+          if (!json.recipients || !json.recipients.length) json.recipients = offR.recipients || [];
+        }
+      } catch(e2) { /* bỏ qua nếu offline engine chưa load */ }
       showAiReviewModal(json, text, filename);
     } else {
+      try {
+        const offRef2 = (window.AI && window.AI.offline) ? window.AI.offline : window.OfflineEngine;
+        if (offRef2 && typeof offRef2.analyzeDocument === 'function') {
+          const offR2 = offRef2.analyzeDocument(text, filename);
+          toast(`AI không trả JSON hợp lệ — dùng offline cho ${filename}`, 'warning');
+          showAiReviewModal(offR2, text, filename);
+          return;
+        }
+      } catch(e3) { /* bỏ qua */ }
       toast(`AI không trả về JSON hợp lệ cho ${filename} — lưu thủ công`, 'warning');
       saveDocFallback(filename, text);
     }
   } catch(e) {
+    try {
+      const offRef3 = (window.AI && window.AI.offline) ? window.AI.offline : window.OfflineEngine;
+      if (offRef3 && typeof offRef3.analyzeDocument === 'function') {
+        const offR3 = offRef3.analyzeDocument(text, filename);
+        toast(`Lỗi API (${e.message}) — phân tích offline`, 'warning');
+        showAiReviewModal(offR3, text, filename);
+        return;
+      }
+    } catch(e4) { /* bỏ qua */ }
     toast(`Lỗi AI: ${e.message}. Lưu thủ công...`, 'warning');
     saveDocFallback(filename, text);
   }
 }
-
 // Lưu dữ liệu tạm chờ xác nhận
 let _pendingAiJson = null;
 let _pendingAiText = '';
@@ -3886,8 +3941,8 @@ async function analyzeDoc(id) {
   const docs = DB.get('docs');
   const doc = docs.find(d=>d.id==id);
   if(!doc){toast('Không tìm thấy văn bản','error');return;}
-  if(!DB.getObj('settings').apiKey){toast('Vui lòng cấu hình API Key Gemini trước!','warning');showPage('settings');return;}
-  toast('AI đang phân tích lại văn bản...','info');
+  const hasKey_aDoc = !!(DB.getObj('settings').apiKey);
+  toast(hasKey_aDoc ? 'AI đang phân tích lại văn bản...' : '📴 Phân tích offline (không có API key)...', 'info');
   try {
     const text = doc.rawText || doc.summary || doc.title;
     await analyzeWithAI(text, doc.filename||doc.title);
@@ -4184,28 +4239,47 @@ function loadSummary() {
 async function generateSummaryAI() {
   const docs = DB.get('docs');
   if(!docs.length){toast('Chưa có văn bản nào để tổng hợp','warning');return;}
-  if(!DB.getObj('settings').apiKey){toast('Cần cấu hình API Key Gemini','warning');showPage('settings');return;}
   const el = document.getElementById('summaryAiResult');
-  el.innerHTML = '<div style="text-align:center;padding:12px"><div class="spinner" style="margin:0 auto 8px"></div>AI đang tổng hợp...</div>';
+  const hasKey_sum = !!(DB.getObj('settings').apiKey);
   const from = document.getElementById('summaryFrom').value;
   const to = document.getElementById('summaryTo').value;
   let filteredDocs = docs;
   if(from) filteredDocs = filteredDocs.filter(d=>d.issueDate>=from);
   if(to) filteredDocs = filteredDocs.filter(d=>d.issueDate<=to);
 
-  const docList = filteredDocs.map(d=>`- ${d.title}${d.code?' ('+d.code+')':''}: ${d.summary}`).join('\n');
-  const prompt = `Bạn là chuyên gia về công tác Đoàn TNCS Hồ Chí Minh. Hãy tổng hợp trích yếu các văn bản sau thành một bản tóm tắt chuyên nghiệp, có cấu trúc rõ ràng theo loại văn bản, nêu bật các điểm chính và nhiệm vụ quan trọng. Viết bằng tiếng Việt, phong cách hành chính:
+  // Offline fallback khi không có API key
+  if (!hasKey_sum) {
+    el.innerHTML = '<div style="text-align:center;padding:12px"><div class="spinner" style="margin:0 auto 8px"></div>Tổng hợp offline...</div>';
+    try {
+      const offRefSum = (window.AI && window.AI.offline) ? window.AI.offline : window.OfflineEngine;
+      if (offRefSum && typeof offRefSum.summarizeDocs === 'function') {
+        const offSum = offRefSum.summarizeDocs(filteredDocs);
+        el.innerHTML = '<div style="font-size:0.78rem;color:var(--gray);margin-bottom:8px">📴 Tổng hợp offline (không có API key)</div>' + offSum.replace(/\n/g,'<br>');
+        return;
+      }
+    } catch(exSum) { /* tiếp tục */ }
+    el.innerHTML = '<span style="opacity:0.7">Cần cấu hình API Key để dùng AI. <a href="#" onclick="showPage(\'settings\');return false;" style="color:var(--gold)">Cài đặt</a></span>';
+    return;
+  }
 
-Danh sách văn bản (${filteredDocs.length} văn bản):
-${docList.substring(0,5000)}`;
+  el.innerHTML = '<div style="text-align:center;padding:12px"><div class="spinner" style="margin:0 auto 8px"></div>AI đang tổng hợp...</div>';
+  const docList = filteredDocs.map(d=>`- ${d.title}${d.code?' ('+d.code+')':''}: ${d.summary}`).join('\n');
+  const prompt = `Bạn là chuyên gia về công tác Đoàn TNCS Hồ Chí Minh. Hãy tổng hợp trích yếu các văn bản sau thành một bản tóm tắt chuyên nghiệp, có cấu trúc rõ ràng theo loại văn bản, nêu bật các điểm chính và nhiệm vụ quan trọng. Viết bằng tiếng Việt, phong cách hành chính:\n\nDanh sách văn bản (${filteredDocs.length} văn bản):\n${docList.substring(0,5000)}`;
   try {
     const result = await callAI(prompt);
     el.innerHTML = result.replace(/\n/g,'<br>');
   } catch(e) {
+    try {
+      const offRefSum2 = (window.AI && window.AI.offline) ? window.AI.offline : window.OfflineEngine;
+      if (offRefSum2 && typeof offRefSum2.summarizeDocs === 'function') {
+        const offSum2 = offRefSum2.summarizeDocs(filteredDocs);
+        el.innerHTML = '<div style="font-size:0.78rem;color:var(--gold);margin-bottom:8px">⚠️ API lỗi — tổng hợp offline</div>' + offSum2.replace(/\n/g,'<br>');
+        return;
+      }
+    } catch(e2) { /* bỏ qua */ }
     el.innerHTML = `<span style="color:rgba(255,100,100,0.8)">Lỗi: ${e.message}</span>`;
   }
 }
-
 function exportSummary() {
   loadSummary();
   const content = document.getElementById('summaryReportPreview').innerText;
@@ -4247,7 +4321,7 @@ function renderMembers() {
 function removeMember(id) { members=members.filter(m=>m.id!==id); renderMembers(); }
 
 async function generateReportAI() {
-  if(!DB.getObj('settings').apiKey){toast('Cần cấu hình API Key Gemini','warning');showPage('settings');return;}
+  const hasKey_rpt = !!(DB.getObj('settings').apiKey);
   const unit = document.getElementById('rpUnit').value.trim()||'Đơn vị Đoàn';
   const period = document.getElementById('rpPeriod').value.trim()||'Giai đoạn báo cáo';
   const memberCount = document.getElementById('rpMemberCount').value||'0';
@@ -4259,6 +4333,28 @@ async function generateReportAI() {
   const docSummary = docs.slice(-10).map(d=>`${d.title}: ${d.summary||''}`).join('\n');
 
   const el = document.getElementById('reportAiResult');
+
+  // Offline fallback khi không có API key
+  if (!hasKey_rpt) {
+    el.innerHTML = '<div style="text-align:center;padding:12px"><div class="spinner" style="margin:0 auto 8px"></div>Soạn offline...</div>';
+    try {
+      const offRefRpt = (window.AI && window.AI.offline) ? window.AI.offline : window.OfflineEngine;
+      if (offRefRpt && typeof offRefRpt.generateAchievementReport === 'function') {
+        const rptVars = {unit, period, memberCount, leader: (DB.getObj('settings')||{}).secretary||'Bí thư Đoàn', highlights: highlight?[highlight]:[]};
+        const offRpt = offRefRpt.generateAchievementReport(rptVars);
+        el.innerHTML = '<div style="font-size:0.78rem;color:var(--gray);margin-bottom:8px">📴 Soạn offline (không có API key)</div>' + offRpt.replace(/\n/g,'<br>');
+        document.getElementById('rpPreviewTitle').textContent = 'BÁO CÁO THÀNH TÍCH THI ĐUA — ' + unit.toUpperCase();
+        document.getElementById('rpPreviewMeta').textContent = 'Đơn vị: ' + unit + ' | Giai đoạn: ' + period;
+        document.getElementById('rpPreviewBody').innerHTML = offRpt.replace(/\n/g,'<br>');
+        const bnrRpt = document.getElementById('reportAiReviewBanner');
+        if(bnrRpt) bnrRpt.style.display = 'flex';
+        return;
+      }
+    } catch(exRpt) { /* tiếp tục */ }
+    el.innerHTML = '<span style="opacity:0.7">Cần cấu hình API Key Gemini để dùng AI soạn báo cáo. <a href="#" onclick="showPage(\'settings\');return false;" style="color:var(--gold)">Cài đặt</a></span>';
+    return;
+  }
+
   el.innerHTML='<div style="text-align:center;padding:12px"><div class="spinner" style="margin:0 auto 8px"></div>AI đang soạn báo cáo...</div>';
 
   const prompt = `Bạn là chuyên gia soạn thảo văn bản báo cáo thành tích thi đua của tổ chức Đoàn TNCS Hồ Chí Minh Việt Nam.
@@ -4287,6 +4383,17 @@ Soạn báo cáo có đủ các phần: Tiêu đề, Phần I - Đặc điểm t
     const banner = document.getElementById('reportAiReviewBanner');
     if(banner) banner.style.display = 'flex';
   } catch(e) {
+    try {
+      const offRefRpt2 = (window.AI && window.AI.offline) ? window.AI.offline : window.OfflineEngine;
+      if (offRefRpt2 && typeof offRefRpt2.generateAchievementReport === 'function') {
+        const offRpt2 = offRefRpt2.generateAchievementReport({unit, period, memberCount, leader: (DB.getObj('settings')||{}).secretary||'Bí thư Đoàn', highlights: highlight?[highlight]:[]});
+        el.innerHTML = '<div style="font-size:0.78rem;color:var(--gold);margin-bottom:8px">⚠️ API lỗi — soạn báo cáo offline</div>' + offRpt2.replace(/\n/g,'<br>');
+        document.getElementById('rpPreviewBody').innerHTML = offRpt2.replace(/\n/g,'<br>');
+        const bnrRpt2 = document.getElementById('reportAiReviewBanner');
+        if(bnrRpt2) bnrRpt2.style.display = 'flex';
+        return;
+      }
+    } catch(e2) { /* bỏ qua */ }
     el.innerHTML=`<span style="color:rgba(255,100,100,0.8)">Lỗi: ${e.message}</span>`;
   }
 }
@@ -4460,7 +4567,7 @@ function exportTasksCSV() {
 //  THỐNG KÊ NHANH AI
 // ================================================================
 async function aiAnalyticsSummary() {
-  if(!DB.getObj('settings').apiKey){toast('Cần cấu hình API Key Gemini','warning');showPage('settings');return;}
+  const hasKey_anl = !!(DB.getObj('settings').apiKey);
   const docs = DB.get('docs');
   const tasks = DB.get('tasks');
   const reminders = DB.get('reminders');
@@ -4471,6 +4578,23 @@ async function aiAnalyticsSummary() {
   const pendingCount = docs.filter(d=>d.status==='pending').length;
   const el = document.getElementById('aiAnalyticsSummary');
   if(!el) return;
+
+  // Offline fallback khi không có API key
+  if (!hasKey_anl) {
+    const doneC_anl = tasks.filter(t=>t.status==='done').length;
+    const remPend_anl = reminders.filter(r=>!r.done).length;
+    const lines_anl = [
+      `📊 <b>Tổng kết tình hình</b> (offline):`,
+      `• Văn bản: ${docs.length} tổng • ${pendingCount} chờ xử lý • ${overdueCount} quá hạn`,
+      `• Công việc: ${tasks.length} tổng • ${doneC_anl} hoàn thành (${tasks.length?Math.round(doneC_anl/tasks.length*100):0}%)`,
+      `• Lịch nhắc chưa hoàn thành: ${remPend_anl}`,
+    ];
+    if (overdueCount > 0) lines_anl.push(`⚠️ Ưu tiên: xử lý ngay ${overdueCount} văn bản quá hạn!`);
+    if (pendingCount > 3) lines_anl.push(`📋 Có ${pendingCount} văn bản đang chờ — kiểm tra và phân công xử lý.`);
+    el.innerHTML = '<div style="font-size:0.75rem;color:var(--gray);margin-bottom:5px">📴 Phân tích offline (không có API key)</div>' + lines_anl.join('<br>');
+    return;
+  }
+
   el.innerHTML = '<div style="text-align:center;padding:8px"><div class="spinner" style="margin:0 auto 8px;border-color:rgba(255,255,255,0.2);border-top-color:var(--gold-light)"></div><small>AI đang phân tích...</small></div>';
   const prompt = `Bạn là chuyên gia phân tích dữ liệu công tác Đoàn TNCS Hồ Chí Minh. Hãy đưa ra nhận xét ngắn gọn (3-4 câu) về tình hình quản lý văn bản dựa trên dữ liệu sau:
 - Tổng văn bản: ${docs.length}
@@ -4484,7 +4608,8 @@ Viết nhận xét thực tế và đề xuất 2-3 hành động ưu tiên cầ
     const result = await callAI(prompt);
     el.innerHTML = result.replace(/\n/g,'<br>');
   } catch(e) {
-    el.innerHTML = `<span style="opacity:0.7">Lỗi: ${e.message}</span>`;
+    const doneC_e = tasks.filter(t=>t.status==='done').length;
+    el.innerHTML = `⚠️ API lỗi — offline: ${docs.length} VB (${pendingCount} chờ, ${overdueCount} quá hạn) | CV: ${doneC_e}/${tasks.length} hoàn thành. Lỗi: ${e.message}`;
   }
 }
 
@@ -5578,7 +5703,7 @@ function generateTemplateManual() {
 
 async function generateTemplateWithAI() {
   if(!selectedTplId) { toast('Vui lòng chọn mẫu văn bản từ danh sách','warning'); return; }
-  if(!DB.getObj('settings').apiKey) { toast('Cần cấu hình API Key Gemini','warning'); showPage('settings'); return; }
+  const hasKey_tpl = !!(DB.getObj('settings').apiKey);
   const tpl = getTplById(selectedTplId);
   if(!tpl) return;
 
@@ -5596,6 +5721,35 @@ async function generateTemplateWithAI() {
   const previewCard = document.getElementById('tplPreviewCard');
   const previewEl = document.getElementById('tplPreviewContent');
   if(previewCard) previewCard.style.display = 'block';
+
+  // Offline fallback khi không có API key
+  if (!hasKey_tpl) {
+    if(previewEl) previewEl.innerHTML = '<div style="text-align:center;padding:32px"><div class="spinner" style="margin:0 auto 12px;border-color:rgba(0,0,0,0.1);border-top-color:var(--red)"></div><div style="font-size:0.85rem;color:var(--gray)">Tạo offline...</div></div>';
+    try {
+      const offRefTpl = (window.AI && window.AI.offline) ? window.AI.offline : window.OfflineEngine;
+      if (offRefTpl && typeof offRefTpl.fillTemplateContent === 'function') {
+        const aiDataOff = offRefTpl.fillTemplateContent(tpl.type, vars);
+        const finalVarsOff = {...vars, '{{NOI_DUNG_CHINH}}': aiDataOff.NOI_DUNG_CHINH||'', '{{KET_QUA_HOAT_DONG}}': aiDataOff.KET_QUA_HOAT_DONG||'', '{{PHUONG_HUONG}}': aiDataOff.PHUONG_HUONG||'', '{{THANH_TICH}}': aiDataOff.THANH_TICH||''};
+        const filledOff = fillTemplate(tpl.content, finalVarsOff);
+        window._currentTplRaw = filledOff;
+        window._currentTplName = tpl.name;
+        const escapedOff = filledOff.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+        const highlightedOff = escapedOff.replace(/\[([^\]]+)\]/g,'<span style="background:rgba(212,160,23,0.2);color:#b45309;border-radius:3px;padding:0 3px">[$1]</span>');
+        if(previewEl) {
+          previewEl.innerHTML = '<div style="font-size:0.78rem;color:var(--gray);margin-bottom:8px">📴 Nội dung được tạo offline (không có API key)</div><pre style="white-space:pre-wrap;font-family:\'Times New Roman\',serif;font-size:13pt;line-height:2;margin:0">' + highlightedOff + '</pre>';
+          previewEl.dataset.rawContent = filledOff;
+        }
+        const reviewBannerOff = document.getElementById('tplAiReviewBanner');
+        if(reviewBannerOff) reviewBannerOff.style.display = 'flex';
+        setTimeout(() => previewCard.scrollIntoView({behavior:'smooth', block:'start'}), 100);
+        toast('📴 Đã tạo nội dung offline! Kiểm tra trường màu vàng trước khi dùng.','info');
+        return;
+      }
+    } catch(exTpl) { /* tiếp tục */ }
+    if(previewEl) previewEl.innerHTML = '<span style="opacity:0.7">Cần cấu hình API Key Gemini để dùng AI tạo nội dung. <a href="#" onclick="showPage(\'settings\');return false;" style="color:var(--red)">Cài đặt</a></span>';
+    return;
+  }
+
   if(previewEl) previewEl.innerHTML = '<div style="text-align:center;padding:32px"><div class="spinner" style="margin:0 auto 12px;border-color:rgba(0,0,0,0.1);border-top-color:var(--red)"></div><div style="font-size:0.85rem;color:var(--gray)">AI đang soạn thảo nội dung theo mẫu...</div></div>';
 
   const prompt = `Bạn là chuyên gia soạn thảo văn bản hành chính Đoàn TNCS Hồ Chí Minh Việt Nam.
@@ -5658,6 +5812,24 @@ Chỉ trả về JSON, không markdown, không giải thích.`;
     setTimeout(() => previewCard.scrollIntoView({behavior:'smooth', block:'start'}), 100);
     toast('✓ AI đã soạn thảo xong! Vui lòng kiểm tra nội dung được đánh dấu màu vàng trước khi sử dụng.','success');
   } catch(e) {
+    // API lỗi → thử offline
+    try {
+      const offRefTpl2 = (window.AI && window.AI.offline) ? window.AI.offline : window.OfflineEngine;
+      if (offRefTpl2 && typeof offRefTpl2.fillTemplateContent === 'function') {
+        const aiDataOff2 = offRefTpl2.fillTemplateContent(tpl.type, vars);
+        const fVarsOff2 = {...vars, '{{NOI_DUNG_CHINH}}': aiDataOff2.NOI_DUNG_CHINH||'', '{{KET_QUA_HOAT_DONG}}': aiDataOff2.KET_QUA_HOAT_DONG||'', '{{PHUONG_HUONG}}': aiDataOff2.PHUONG_HUONG||'', '{{THANH_TICH}}': aiDataOff2.THANH_TICH||''};
+        const fOff2 = fillTemplate(tpl.content, fVarsOff2);
+        window._currentTplRaw = fOff2; window._currentTplName = tpl.name;
+        const esc2 = fOff2.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+        const hl2 = esc2.replace(/\[([^\]]+)\]/g,'<span style="background:rgba(212,160,23,0.2);color:#b45309;border-radius:3px;padding:0 3px">[$1]</span>');
+        if(previewEl) { previewEl.innerHTML = '<div style="font-size:0.78rem;color:var(--gold);margin-bottom:8px">⚠️ API lỗi — tạo offline</div><pre style="white-space:pre-wrap;font-family:\'Times New Roman\',serif;font-size:13pt;line-height:2;margin:0">' + hl2 + '</pre>'; previewEl.dataset.rawContent = fOff2; }
+        const bnrTpl2 = document.getElementById('tplAiReviewBanner');
+        if(bnrTpl2) bnrTpl2.style.display = 'flex';
+        setTimeout(() => previewCard.scrollIntoView({behavior:'smooth', block:'start'}), 100);
+        toast('⚠️ API lỗi — đã tạo offline. Kiểm tra nội dung trước khi dùng.','warning');
+        return;
+      }
+    } catch(e2) { /* bỏ qua */ }
     if(previewEl) previewEl.innerHTML = '<div style="color:var(--red);padding:16px">Lỗi AI: '+e.message+'</div>';
     toast('Lỗi AI: '+e.message,'error');
   }
