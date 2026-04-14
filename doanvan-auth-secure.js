@@ -1,8 +1,8 @@
 /**
  * ╔══════════════════════════════════════════════════════════════════════════════╗
- * ║   DOANVAN — AUTH SECURE  v4.0  (Nâng cấp toàn diện)                       ║
+ * ║   DOANVAN — AUTH SECURE  v4.1  (Nâng cấp đăng nhập Username/Password)      ║
  * ║                                                                              ║
- * ║  KHẮC PHỤC & NÂNG CẤP so với v3.0:                                         ║
+ * ║  KHẮC PHỤC & NÂNG CẤP so với v4.0:                                         ║
  * ║  ✅ FIX: Đóng modal AdminSetup không còn mất overlay đăng nhập              ║
  * ║  ✅ FIX: Sau AdminSetup hoàn tất → tự đăng nhập PIN ngay, không cần reload ║
  * ║  ✅ FIX: SyncCode dùng dvSecureAuth overlay thay vì dvAuthModal cũ          ║
@@ -10,6 +10,10 @@
  * ║  ✅ FIX: Nút "Đổi tài khoản" / "Đăng xuất" ngay màn hình PIN login         ║
  * ║  ✅ FIX: Admin step-1 SA bắt buộc test kết nối trước khi sang step-2        ║
  * ║  ✅ FIX: Lockout timer tự clear đúng sau khi hết thời gian                  ║
+ * ║  ✅ NEW v4.1: Màn hình đăng nhập Username + Password sau khi Admin setup    ║
+ * ║  ✅ NEW v4.1: Sau setup Admin → quay về trang đăng nhập Username/Password   ║
+ * ║  ✅ NEW v4.1: Fix pinHash thiếu trong mt_config sau AdminSetup              ║
+ * ║  ✅ NEW v4.1: Hỗ trợ đăng nhập bằng Username+PIN cả trên màn hình PIN      ║
  * ║  ✅ NEW: Giao diện toàn bộ được polish — animation, feedback trực quan       ║
  * ║  ✅ NEW: Bảng số PIN hỗ trợ cả keyboard vật lý (desktop)                    ║
  * ║  ✅ NEW: Màn hình loading mượt sau đăng nhập thành công                     ║
@@ -22,7 +26,7 @@
 // ─────────────────────────────────────────────────────────────────────
 //  HẰNG SỐ & CẤU HÌNH
 // ─────────────────────────────────────────────────────────────────────
-const AUTH_SECURE_VERSION = '4.0';
+const AUTH_SECURE_VERSION = '4.1';
 const SESSION_TTL         = 8 * 60 * 60 * 1000; // 8 giờ
 const MAX_FAILED_ATTEMPTS = 5;
 const LOCKOUT_DURATION    = 5 * 60 * 1000; // 5 phút
@@ -453,6 +457,7 @@ function _buildNoSetupUI() {
       <div class="dvsec-link-row" style="margin-top:8px">
         <i class="fas fa-info-circle" style="margin-right:4px;opacity:0.6"></i>
         Đã có tài khoản? Dùng <a onclick="dvSecureOpenSyncCode()">Sync Code</a>
+        &nbsp;·&nbsp; <a onclick="dvSecureShowUsernameLogin()">Đăng nhập</a>
       </div>
     </div>
   </div>`;
@@ -510,6 +515,10 @@ function _buildPINLoginUI(state) {
       </div>
 
       <div class="dvsec-link-row">
+        <a onclick="dvSecureShowUsernameLogin()">
+          <i class="fas fa-user"></i> Đăng nhập
+        </a>
+        &nbsp;·&nbsp;
         <a onclick="dvSecureOpenSyncCode()">
           <i class="fas fa-sync-alt"></i> Sync Code
         </a>
@@ -526,6 +535,231 @@ function _buildPINLoginUI(state) {
   </div>`;
 }
 
+// ─────────────────────────────────────────────────────────────────────
+//  UI: ĐĂNG NHẬP BẰỚNG USERNAME + PIN (v4.1)
+// ─────────────────────────────────────────────────────────────────────
+function _buildUsernameLoginUI() {
+  return `
+  <div id="dvSecureBox">
+    <div class="dvsec-header">
+      <div class="dvsec-logo"><i class="fas fa-star"></i></div>
+      <div class="dvsec-title">ĐoànVăn</div>
+      <div class="dvsec-sub">Phần mềm quản lý Đoàn viên</div>
+    </div>
+    <div class="dvsec-body">
+      <div style="margin-bottom:20px;text-align:center">
+        <div style="display:inline-flex;align-items:center;gap:8px;background:#fef2f2;border:1px solid #fecaca;border-radius:20px;padding:6px 16px;font-size:0.78rem;color:#c0392b;font-weight:700">
+          <i class="fas fa-shield-alt"></i> Đăng nhập bằng tài khoản
+        </div>
+      </div>
+      <div class="dvsec-form-group" style="margin-bottom:14px">
+        <label style="font-size:0.8rem;font-weight:700;color:#475569;margin-bottom:6px;display:block">
+          <i class="fas fa-user" style="margin-right:5px;color:#c0392b"></i>Tên đăng nhập
+        </label>
+        <input id="dvLoginUsername"
+          placeholder="Nhập tên đăng nhập..."
+          autocomplete="username"
+          style="width:100%;padding:11px 14px;border:1.5px solid #e2e8f0;border-radius:10px;font-size:0.9rem;outline:none;box-sizing:border-box;transition:border-color 0.2s;font-family:inherit"
+          onfocus="this.style.borderColor='#c0392b'"
+          onblur="this.style.borderColor='#e2e8f0'"
+          onkeydown="if(event.key==='Enter'){document.getElementById('dvLoginPIN').focus()}"
+        >
+      </div>
+      <div class="dvsec-form-group" style="margin-bottom:8px">
+        <label style="font-size:0.8rem;font-weight:700;color:#475569;margin-bottom:6px;display:block">
+          <i class="fas fa-lock" style="margin-right:5px;color:#c0392b"></i>Mã PIN (6 số)
+        </label>
+        <input id="dvLoginPIN" type="password"
+          placeholder="● ● ● ● ● ●" maxlength="8" inputmode="numeric"
+          autocomplete="current-password"
+          style="width:100%;padding:11px 14px;border:1.5px solid #e2e8f0;border-radius:10px;font-size:1.1rem;letter-spacing:8px;text-align:center;outline:none;box-sizing:border-box;transition:border-color 0.2s;font-family:inherit"
+          onfocus="this.style.borderColor='#c0392b'"
+          onblur="this.style.borderColor='#e2e8f0'"
+          oninput="this.value=this.value.replace(/[^0-9]/g,'')"
+          onkeydown="if(event.key==='Enter'){dvSecureDoUsernameLogin()}"
+        >
+      </div>
+      <div id="dvLoginError" style="min-height:20px;font-size:0.78rem;color:#dc2626;text-align:center;margin-bottom:12px;line-height:1.4"></div>
+      <button onclick="dvSecureDoUsernameLogin()"
+        style="width:100%;padding:13px;border:none;background:linear-gradient(135deg,#c0392b,#e74c3c);color:#fff;border-radius:12px;font-size:0.95rem;font-weight:800;cursor:pointer;box-shadow:0 4px 14px rgba(192,57,43,0.35);margin-bottom:14px">
+        <i class="fas fa-sign-in-alt"></i> Đăng nhập
+      </button>
+      <hr class="dvsec-divider">
+      <button class="dvsec-btn ghost" onclick="dvSecureShowLogin()" style="margin-bottom:6px;font-size:0.82rem">
+        <i class="fas fa-th" style="margin-right:5px"></i>Dùng bàn phím số PIN
+      </button>
+      <button class="dvsec-btn ghost" onclick="dvSecureOpenSyncCode()" style="font-size:0.82rem">
+        <i class="fas fa-sync-alt" style="margin-right:5px"></i>Sync Code (thiết bị khác)
+      </button>
+      <div class="dvsec-version">
+        <i class="fas fa-shield-alt" style="color:#10b981"></i>
+        Phiên bảo mật · Auth Secure v${AUTH_SECURE_VERSION}
+      </div>
+    </div>
+  </div>\`;
+}
+
+/** Hiển thị màn hình đăng nhập Username+PIN */
+window.dvSecureShowUsernameLogin = function() {
+  _injectSecureCSS();
+  document.getElementById('dvSecureAuth')?.remove();
+  clearInterval(_lockoutInterval);
+
+  const overlay = document.createElement('div');
+  overlay.id = 'dvSecureAuth';
+  overlay.innerHTML = _buildUsernameLoginUI();
+  document.body.appendChild(overlay);
+  setTimeout(() => document.getElementById('dvLoginUsername')?.focus(), 150);
+};
+
+/** Xử lý đăng nhập Username + PIN */
+window.dvSecureDoUsernameLogin = async function() {
+  const username = (document.getElementById('dvLoginUsername')?.value || '').trim().toLowerCase();
+  const pin      = (document.getElementById('dvLoginPIN')?.value || '').trim();
+  const errEl    = document.getElementById('dvLoginError');
+  const btn      = document.querySelector('#dvSecureAuth button[onclick="dvSecureDoUsernameLogin()"]');
+
+  const setErr = (msg) => { if (errEl) errEl.innerHTML = '<i class="fas fa-exclamation-circle"></i> ' + msg; };
+  const clearErr = () => { if (errEl) errEl.innerHTML = ''; };
+  clearErr();
+
+  if (!username) { setErr('Vui lòng nhập tên đăng nhập.'); document.getElementById('dvLoginUsername')?.focus(); return; }
+  if (!pin || pin.length < 6) { setErr('PIN phải là 6 chữ số.'); document.getElementById('dvLoginPIN')?.focus(); return; }
+
+  if (AuthLock.isLocked()) {
+    setErr('Tài khoản tạm khoá. Thử lại sau ' + AuthLock.remainingSeconds() + ' giây.');
+    return;
+  }
+
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Đang xác thực...'; }
+
+  try {
+    const storedCfg = (() => { try { return JSON.parse(localStorage.getItem(KEYS.MT_CONFIG) || 'null'); } catch { return null; } })();
+    if (!storedCfg) {
+      setErr('Hệ thống chưa được cài đặt.');
+      if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-sign-in-alt"></i> Đăng nhập'; }
+      return;
+    }
+
+    const storedUser     = storedCfg.user || {};
+    const storedUsername = (storedUser.username || '').toLowerCase();
+
+    // ── Trường hợp 1: username khớp với user trong config cục bộ ──
+    if (storedUsername === username) {
+      let pinOk = false;
+
+      if (storedUser.pinHash) {
+        const hashNew = await _hashPIN(pin);
+        const hashOld = _legacyHash(pin);
+        pinOk = storedUser.pinHash === hashNew || storedUser.pinHash === hashOld;
+      } else if (storedUser.pin) {
+        // PIN lưu dạng thô — xảy ra ngay sau setup lần đầu
+        pinOk = storedUser.pin === pin;
+        if (pinOk) {
+          // Hash lại và cập nhật config để lần sau dùng pinHash
+          storedUser.pinHash = _legacyHash(pin);
+          delete storedUser.pin;
+          storedCfg.user = storedUser;
+          localStorage.setItem(KEYS.MT_CONFIG, JSON.stringify(Object.assign({}, storedCfg, { _v: '4.1', _ts: Date.now() })));
+        }
+      }
+
+      if (!pinOk) {
+        const res = AuthLock.recordFailure();
+        if (res.locked) {
+          setErr('Quá nhiều lần sai. Tài khoản bị khoá 5 phút.');
+          if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-sign-in-alt"></i> Đăng nhập'; }
+          return;
+        }
+        setErr('PIN không đúng. Còn ' + res.attemptsLeft + ' lần thử.');
+        const pinEl = document.getElementById('dvLoginPIN');
+        if (pinEl) { pinEl.value = ''; pinEl.focus(); }
+        if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-sign-in-alt"></i> Đăng nhập'; }
+        return;
+      }
+
+      AuthLock.clearFailures();
+      const finalCfg = (() => { try { return JSON.parse(localStorage.getItem(KEYS.MT_CONFIG) || 'null'); } catch { return storedCfg; } })();
+      SecureSession.start(finalCfg.user?.role || finalCfg.role || 'admin', finalCfg.user?.username, finalCfg.orgId || 'all');
+      _bridgeLegacySession(finalCfg);
+      _showLoginSuccess(finalCfg);
+      return;
+    }
+
+    // ── Trường hợp 2: tìm user trong GSheet (nếu module sẵn sàng) ──
+    if (storedCfg.spreadsheetId && typeof SheetsAPI !== 'undefined') {
+      try {
+        const rows   = await SheetsAPI.read(storedCfg.spreadsheetId, 'system_users!A:K');
+        const header = rows[0] || [];
+        const col    = (name) => header.indexOf(name);
+        const found  = rows.slice(1).find(function(r) {
+          return (r[col('username')] || '').toLowerCase() === username && r[col('status')] !== 'deleted';
+        });
+
+        if (!found) {
+          const res = AuthLock.recordFailure();
+          setErr('Tên đăng nhập không tồn tại. Còn ' + res.attemptsLeft + ' lần thử.');
+          if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-sign-in-alt"></i> Đăng nhập'; }
+          return;
+        }
+
+        const pinHash = found[col('pinHash')] || '';
+        const hashNew = await _hashPIN(pin);
+        const hashOld = _legacyHash(pin);
+        const pinOk   = pinHash === hashNew || pinHash === hashOld;
+
+        if (!pinOk) {
+          const res = AuthLock.recordFailure();
+          if (res.locked) {
+            setErr('Quá nhiều lần sai. Tài khoản bị khoá 5 phút.');
+          } else {
+            setErr('PIN không đúng. Còn ' + res.attemptsLeft + ' lần thử.');
+          }
+          const pinEl = document.getElementById('dvLoginPIN');
+          if (pinEl) { pinEl.value = ''; pinEl.focus(); }
+          if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-sign-in-alt"></i> Đăng nhập'; }
+          return;
+        }
+
+        // PIN đúng — cập nhật config với user tìm được từ GSheet
+        AuthLock.clearFailures();
+        const newUser = {
+          username: found[col('username')],
+          displayName: found[col('displayName')] || found[col('username')],
+          pinHash: pinHash,
+          role: found[col('role')] || 'member'
+        };
+        const newCfg = Object.assign({}, storedCfg, {
+          user: newUser,
+          role: newUser.role,
+          orgId: found[col('orgId')] || 'all',
+          orgName: found[col('orgName')] || 'Hệ thống',
+          _v: '4.1',
+          _ts: Date.now()
+        });
+        localStorage.setItem(KEYS.MT_CONFIG, JSON.stringify(newCfg));
+        SecureSession.start(newUser.role, newUser.username, newCfg.orgId);
+        _bridgeLegacySession(newCfg);
+        _showLoginSuccess(newCfg);
+        return;
+
+      } catch(sheetErr) {
+        console.warn('[AuthSecure] Không đọc được GSheet khi login:', sheetErr);
+        // Tiếp tục fallback xuống dưới
+      }
+    }
+
+    // Không tìm thấy user
+    const res = AuthLock.recordFailure();
+    setErr('Tên đăng nhập không đúng. Còn ' + res.attemptsLeft + ' lần thử.');
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-sign-in-alt"></i> Đăng nhập'; }
+
+  } catch(err) {
+    console.error('[AuthSecure] Lỗi đăng nhập:', err);
+    setErr('Lỗi xác thực. Thử lại.');
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-sign-in-alt"></i> Đăng nhập'; }
+  }
+};
 // ─────────────────────────────────────────────────────────────────────
 //  KEYBOARD VẬT LÝ HỖ TRỢ
 // ─────────────────────────────────────────────────────────────────────
@@ -1028,15 +1262,19 @@ window.dvSecureDoAdminSetup = async function() {
     const origGo = window.mtGoStep;
     window.mtGoStep = dvSetupGoStep;
 
-    // Hook: sau khi mtDoAdminSetup xong thành công → chuyển sang PIN login
+    // Hook: sau khi mtDoAdminSetup xong thành công → chuyển sang màn hình đăng nhập username
     const origDo = window.mtDoAdminSetup;
     window.mtDoAdminSetup = async function() {
       await origDo.apply(this, arguments);
-      // Kiểm tra sau 2s (mtDoAdminSetup có setTimeout 1800ms rồi remove modal)
+      // Kiểm tra sau 2.2s (mtDoAdminSetup có setTimeout 1800ms rồi remove modal)
       setTimeout(() => {
         window.mtGoStep = origGo; // restore
         _secAppState = _getAppState();
         if (_secAppState.mode === 'MT_AUTH') {
+          // v4.1: Dùng màn hình username+PIN thay vì PIN keypad
+          // để người dùng thấy rõ phải nhập tên đăng nhập + PIN vừa tạo
+          dvSecureShowUsernameLogin();
+        } else {
           dvSecureShowLogin();
         }
       }, 2200);
@@ -1086,8 +1324,11 @@ window.dvSecureOpenSwitchAccount = function() {
       <div class="dvsec-sub">Chọn thao tác bạn muốn thực hiện</div>
     </div>
     <div class="dvsec-body">
-      <button class="dvsec-btn primary" onclick="dvSecureShowLogin()">
-        <i class="fas fa-arrow-left"></i>Quay lại đăng nhập
+      <button class="dvsec-btn primary" onclick="dvSecureShowUsernameLogin()">
+        <i class="fas fa-user"></i>Đăng nhập bằng tài khoản
+      </button>
+      <button class="dvsec-btn ghost" onclick="dvSecureShowLogin()">
+        <i class="fas fa-th"></i>Dùng bàn phím số PIN
       </button>
       <button class="dvsec-btn ghost" onclick="dvSecureOpenSyncCode()">
         <i class="fas fa-sync-alt"></i>Đăng nhập bằng Sync Code
@@ -1558,7 +1799,14 @@ function dvSecureInit() {
 
   if (_checkSessionOnLoad()) return;
 
-  dvSecureShowLogin();
+  // v4.1: Nếu đã có config (đã setup), hiển thị màn hình đăng nhập username+PIN
+  // thay vì bàn phím số PIN — trực quan hơn, rõ ràng hơn cho người dùng
+  const appState = _getAppState();
+  if (appState.mode === 'MT_AUTH') {
+    dvSecureShowUsernameLogin();
+  } else {
+    dvSecureShowLogin();
+  }
 }
 
 if (document.readyState === 'loading') {
@@ -1571,7 +1819,9 @@ if (document.readyState === 'loading') {
 //  EXPORT GLOBALS
 // ─────────────────────────────────────────────────────────────────────
 window.dvSecureShowLogin        = dvSecureShowLogin;
+window.dvSecureShowUsernameLogin = dvSecureShowUsernameLogin;
+window.dvSecureDoUsernameLogin   = dvSecureDoUsernameLogin;
 window.dvSecureInit             = dvSecureInit;
 window.SecureSession            = SecureSession;
 
-console.info(`[ĐoànVăn Auth Secure v${AUTH_SECURE_VERSION}] ✅ Đã tải — Bảo mật đăng nhập được kích hoạt`);
+console.info(`[ĐoànVăn Auth Secure v${AUTH_SECURE_VERSION}] ✅ Đã tải — Đăng nhập Username+PIN được kích hoạt`);
