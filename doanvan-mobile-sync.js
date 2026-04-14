@@ -550,7 +550,7 @@ function dvShowAuthModal(mode = 'login') {
   <div class="dv-auth-alt">
     ${isSetup
       ? `Đã có tài khoản? <a onclick="dvShowAuthModal('login')">Đăng nhập</a>`
-      : `<a onclick="dvShowAuthModal('setup')">Tạo tài khoản mới</a> &nbsp;|&nbsp; <a onclick="dvShowSyncCodeInput()">Đăng nhập qua Sync Code</a><br><a onclick="if(confirm('Đặt lại PIN về 123456 và đăng nhập? Tài khoản và dữ liệu văn bản không bị xóa.'))dvResetToDefault()" style="color:#dc2626;font-size:0.75rem">Quên PIN? Đặt lại mặc định (123456)</a>`    }
+      : `<a onclick="dvShowAuthModal('setup')">Tạo tài khoản mới</a> &nbsp;|&nbsp; <a onclick="dvShowSyncCodeInput()">Đăng nhập qua Sync Code</a><br><span style="color:#94a3b8;font-size:0.73rem"><i class="fas fa-shield-alt"></i> Quên PIN? Liên hệ Admin để được hỗ trợ reset.</span>`    }
   </div>
 </div>`;
   document.body.appendChild(modal);
@@ -1756,42 +1756,45 @@ async function dvQuickApplySync() {
 // ─────────────────────────────────────────────────────────────────────
 //  H. INIT
 // ─────────────────────────────────────────────────────────────────────
-// Tạo tài khoản mặc định nếu chưa có (PIN: 123456)
+// [ĐÃ VÔ HIỆU HOÁ - Bảo mật v3.0]
+// dvSeedDefaultAccount: KHÔNG tạo tài khoản PIN 123456 mặc định nữa.
+// Lý do: đây là lỗ hổng cho phép bất kỳ ai đăng nhập với quyền cao nhất.
+// Quản lý tài khoản nay do doanvan-auth-secure.js đảm nhiệm.
 function dvSeedDefaultAccount() {
-  const existing = DVAuth.getProfile();
-  if (existing) return;
-  const settings = (() => { try { return JSON.parse(localStorage.getItem('doanvan_settings') || '{}'); } catch { return {}; } })();
-  const name = settings.secretaryName || 'Bí thư';
-  DVAuth.createAccount(name, '123456');
+  // NOP — bị vô hiệu hoá bởi Auth Secure v3.0
+  // Tài khoản chỉ được tạo qua: Admin Setup hoặc Invite Code
 }
 
-// Reset về tài khoản mặc định (dành cho trường hợp quên PIN)
+// [ĐÃ VÔ HIỆU HOÁ - Bảo mật v3.0]
+// dvResetToDefault: KHÔNG cho phép reset PIN về 123456 công khai.
+// Lý do: bất kỳ ai cũng có thể click "Quên PIN?" để bypass authentication.
+// Thay thế: Admin dùng chức năng Reset PIN trong trang Quản lý người dùng.
 function dvResetToDefault() {
-  const settings = (() => { try { return JSON.parse(localStorage.getItem('doanvan_settings') || '{}'); } catch { return {}; } })();
-  const name = settings.secretaryName || 'Bí thư';
-  DVAuth.createAccount(name, '123456');
-  DVAuth.startSession();
-  document.getElementById('dvAuthModal')?.remove();
-  _dvUpdateUserChip();
-  if (typeof dvInitSync === 'function') dvInitSync();
-  if (typeof toast === 'function') toast('<i class="fas fa-unlock" style="color:#16a34a"></i> Đã khôi phục tài khoản mặc định. PIN: <strong>123456</strong>', 'success');
+  if (typeof toast === 'function') {
+    toast(
+      '<i class="fas fa-shield-alt" style="color:#dc2626"></i> ' +
+      'Tính năng "Đặt lại mặc định" đã bị vô hiệu hoá vì lý do bảo mật. ' +
+      'Liên hệ Admin để được reset PIN.',
+      'error'
+    );
+  }
 }
 
 function dvInit() {
   _dvInjectMobileUI();
 
-  // Tạo tài khoản mặc định nếu lần đầu dùng
-  dvSeedDefaultAccount();
-  const profile = DVAuth.getProfile();
+  // KHÔNG gọi dvSeedDefaultAccount() nữa (đã vô hiệu hoá)
+  // Luồng auth được điều phối hoàn toàn bởi doanvan-auth-secure.js
+  // Script này chỉ inject mobile UI, còn lại auth-secure xử lý
+  const profile  = DVAuth.getProfile();
   const loggedIn = DVAuth.isLoggedIn();
 
-  if (!profile) {
-    dvShowAuthModal('setup');
-  } else if (!loggedIn) {
-    dvShowAuthModal('login');
-  } else {    _dvUpdateUserChip();
+  // Nếu auth-secure chưa load (fallback an toàn): chỉ update chip, không tự login
+  if (loggedIn && profile) {
+    _dvUpdateUserChip();
     dvInitSync();
   }
+  // Trường hợp chưa login: auth-secure.js sẽ hiển thị màn hình đăng nhập
 }
 
 // Auto-init sau khi DOM và scripts khác sẵn sàng

@@ -771,6 +771,7 @@ tr:hover .doc-row-actions { opacity: 1; }
 <script src="doanvan-export-module.js"></script>
 <script src="doanvan-mobile-sync.js"></script>
 <script src="doanvan-multitenant.js"></script>
+<script src="doanvan-auth-secure.js"></script>
 </head>
 <body>
 
@@ -838,7 +839,7 @@ tr:hover .doc-row-actions { opacity: 1; }
     </div>
 
     <!-- ADMIN NAV (chỉ hiện khi role=admin) -->
-    <div id="mtAdminNav" style="display:none">
+    <div id="mtAdminNav" class="admin-only-nav" style="display:none">
       <div class="nav-section-title" style="color:var(--red)">Quản trị hệ thống</div>
       <div class="nav-item" onclick="mtShowInviteManager()" style="cursor:pointer">
         <i class="fas fa-user-plus icon"></i><span>Người dùng & Mã mời</span>
@@ -1735,13 +1736,25 @@ tr:hover .doc-row-actions { opacity: 1; }
         <button class="btn btn-primary" onclick="saveSettings()"><i class="fas fa-save"></i> Lưu cài đặt</button>
       </div>
 
+      <!-- ROLE PERMISSION BANNER — hiện với user không phải admin -->
+      <div id="dvRolePermBanner" style="display:none;border-radius:var(--radius);padding:12px 18px;margin-bottom:14px;
+        background:rgba(22,163,74,0.07);border:1px solid rgba(22,163,74,0.25);font-size:0.82rem;
+        display:flex;align-items:center;gap:12px">
+        <i class="fas fa-user-check" style="color:#16a34a;font-size:1.1rem;flex-shrink:0"></i>
+        <div>
+          <strong id="dvRolePermLabel" style="color:#15803d">Đoàn viên</strong>
+          <span style="color:#64748b"> — Bạn có thể cấu hình kết nối Google Sheet và AI cho tài khoản cá nhân.</span>
+          <span style="color:#94a3b8;font-size:0.75rem"> Các chức năng quản trị hệ thống chỉ dành cho Admin.</span>
+        </div>
+      </div>
+
       <!-- MULTI-TENANT STATUS BANNER -->
       <div id="mtStatusBanner" style="border-radius:var(--radius);padding:14px 20px;margin-bottom:14px;display:flex;align-items:center;gap:14px;font-size:0.82rem;cursor:pointer"
         onclick="showPage('settings')" title="Cấu hình hệ thống đa người dùng">
         <div id="mtStatusDot" style="width:10px;height:10px;border-radius:50%;background:#9ca3af;flex-shrink:0"></div>
         <div style="flex:1" id="mtStatusMsg">Đang kiểm tra kết nối hệ thống...</div>
         <button class="btn btn-outline btn-sm" onclick="event.stopPropagation();mtManualSync('pull')"><i class="fas fa-sync-alt"></i> Đồng bộ</button>
-        <button class="btn btn-gold btn-sm" id="mtAdminQuickBtn" style="display:none" onclick="event.stopPropagation();mtShowInviteManager()"><i class="fas fa-user-plus"></i> Quản lý user</button>
+        <button class="btn btn-gold btn-sm" id="mtAdminQuickBtn" data-admin-only style="display:none" onclick="event.stopPropagation();mtShowInviteManager()"><i class="fas fa-user-plus"></i> Quản lý user</button>
       </div>
 
       <!-- AI STATUS BANNER -->
@@ -1904,7 +1917,7 @@ tr:hover .doc-row-actions { opacity: 1; }
                 <button class="btn btn-outline" onclick="exportData()"><i class="fas fa-download"></i> Xuất toàn bộ dữ liệu (JSON)</button>
                 <button class="btn btn-outline" onclick="document.getElementById('importFile').click()"><i class="fas fa-upload"></i> Nhập dữ liệu (JSON)</button>
                 <input type="file" id="importFile" accept=".json" style="display:none" onchange="importData(event)">
-                <button class="btn btn-outline" style="color:var(--red);border-color:rgba(192,57,43,0.3)" onclick="confirmClearData()">
+                <button class="btn btn-outline" data-admin-only style="color:var(--red);border-color:rgba(192,57,43,0.3)" onclick="confirmClearData()">
                   <i class="fas fa-trash-alt"></i> Xóa toàn bộ dữ liệu
                 </button>
               </div>
@@ -2947,9 +2960,37 @@ function showPage(name) {
   if (name === 'analytics') renderAnalytics();
   if (name === 'members') renderMembersPage();
   if (name === 'templates') initTemplatesPage();
-  if (name === 'settings') loadSettings();
+  if (name === 'settings') { loadSettings(); _dvUpdateSettingsRoleBanner(); }
   // Scroll to top on page change
   document.getElementById('content')?.scrollTo({top:0, behavior:'smooth'});
+}
+
+/** Cập nhật banner phân quyền trên trang Settings */
+function _dvUpdateSettingsRoleBanner() {
+  const banner   = document.getElementById('dvRolePermBanner');
+  const label    = document.getElementById('dvRolePermLabel');
+  if (!banner) return;
+  const role     = (typeof dvSecureGetRole === 'function') ? dvSecureGetRole() : null;
+  const isAdmin  = role === 'admin';
+  const roleNames = { admin:'Admin', manager:'Quản lý', member:'Đoàn viên' };
+  const roleColors = { admin:'#c0392b', manager:'#1a2340', member:'#16a34a' };
+
+  if (isAdmin) {
+    // Admin: ẩn banner (không cần thông báo hạn chế)
+    banner.style.display = 'none';
+  } else {
+    banner.style.display = 'flex';
+    const rName = roleNames[role] || 'Người dùng';
+    const rColor = roleColors[role] || '#16a34a';
+    if (label) { label.textContent = rName; label.style.color = rColor; }
+    banner.style.borderColor = rColor + '40';
+    banner.style.background = rColor + '10';
+  }
+
+  // Ẩn/hiện các phần tử data-admin-only
+  document.querySelectorAll('[data-admin-only]').forEach(el => {
+    el.style.display = isAdmin ? '' : 'none';
+  });
 }
 
 function getPageIcon(n) {
@@ -4633,6 +4674,8 @@ function importData(e) {
 }
 
 function confirmClearData() {
+  // Chỉ Admin mới được phép xóa toàn bộ dữ liệu
+  if (typeof dvSecureRequireAdmin === 'function' && !dvSecureRequireAdmin('Xóa toàn bộ dữ liệu')) return;
   confirmAction('Xóa toàn bộ dữ liệu','CẢNH BÁO: Hành động này sẽ xóa toàn bộ văn bản, lịch nhắc, công việc và danh sách đoàn viên. Không thể hoàn tác!',()=>{
     ['docs','reminders','tasks','membersList','customTemplates'].forEach(k=>DB.set(k,[]));
     updateBadges();

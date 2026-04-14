@@ -582,11 +582,29 @@ window.dvAuthUpgrade_regenerateInvite = async function(username) {
 //  PHẦN 8: RESET PIN ADMIN — Admin có thể reset PIN cho user khác
 // ─────────────────────────────────────────────────────────────────────
 
-/** Admin reset PIN của user về mặc định (123456) */
+/**
+ * Admin reset PIN của user — sinh PIN tạm thời ngẫu nhiên (KHÔNG dùng 123456 cố định)
+ * Admin phải thông báo PIN tạm cho user; user đổi ngay sau khi đăng nhập.
+ */
 window.dvAuthUpgrade_adminResetPIN = async function(username) {
   const cfg = MTConfig.get();
-  if (cfg?.role !== 'admin') { if (typeof toast === 'function') toast('Chỉ Admin mới có thể reset PIN', 'error'); return; }
-  if (!confirm(`Reset PIN của @${username} về "123456"?`)) return;
+  // Kiểm tra quyền admin qua SecureSession (ưu tiên) hoặc MTConfig
+  const isAdmin = (typeof SecureSession !== 'undefined' && SecureSession.isAdmin())
+               || cfg?.role === 'admin';
+  if (!isAdmin) {
+    if (typeof toast === 'function') toast('Chỉ Admin mới có thể reset PIN', 'error');
+    return;
+  }
+
+  // Sinh PIN tạm 6 số ngẫu nhiên — KHÔNG phải 123456 cố định
+  const tempPIN = Array.from(crypto.getRandomValues(new Uint8Array(6)))
+    .map(b => b % 10).join('');
+
+  if (!confirm(
+    `Reset PIN của @${username}?\n\n` +
+    `PIN tạm thời sẽ là: ${tempPIN}\n\n` +
+    `Ghi lại PIN này và thông báo cho người dùng.\nYêu cầu họ đổi ngay sau khi đăng nhập.`
+  )) return;
 
   try {
     const rows  = await SheetsAPI.read(cfg.spreadsheetId, 'system_users!A:K');
@@ -594,12 +612,18 @@ window.dvAuthUpgrade_adminResetPIN = async function(username) {
     const row   = users.find(u => u.username === username);
     if (!row) throw new Error('Không tìm thấy người dùng');
 
-    const idx = users.indexOf(row) + 2;
-    const newHash = _dvUpgrade_hashPIN('123456');
+    const idx     = users.indexOf(row) + 2;
+    const newHash = _dvUpgrade_hashPIN(tempPIN);
     await SheetsAPI.write(cfg.spreadsheetId, `system_users!C${idx}`, [[newHash]]);
-    if (typeof toast === 'function') toast(`✅ Đã reset PIN của @${username} về 123456`, 'success');
+
+    if (typeof toast === 'function') {
+      toast(
+        `✅ Đã reset PIN @${username}. PIN tạm: <strong style="font-family:monospace;letter-spacing:3px">${tempPIN}</strong> — Yêu cầu đổi ngay!`,
+        'success'
+      );
+    }
   } catch (e) {
-    if (typeof toast === 'function') toast('Lỗi: ' + e.message, 'error');
+    if (typeof toast === 'function') toast('Lỗi reset PIN: ' + e.message, 'error');
   }
 };
 

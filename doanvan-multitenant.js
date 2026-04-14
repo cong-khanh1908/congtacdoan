@@ -347,7 +347,8 @@ const MTAdmin = {
   },
 
   async _createAdminAccount(sid, adminInfo) {
-    const pinHash = _mtHashPIN(adminInfo.pin || '123456');
+    if (!adminInfo.pin) throw new Error('[AuthSecure] Admin PIN là bắt buộc');
+    const pinHash = _mtHashPIN(adminInfo.pin);
     await SheetsAPI.append(sid, `${SH.USERS}!A:K`, [[
       adminInfo.username,
       adminInfo.displayName,
@@ -987,7 +988,7 @@ function mtShowAdminSetup() {
           <input type="password" class="form-control" id="mtAdminPIN2" placeholder="Xác nhận PIN" maxlength="6"
             pattern="[0-9]{6}" inputmode="numeric" style="font-size:1.2rem;letter-spacing:8px;flex:1">
         </div>
-        <div class="form-hint">PIN mặc định nếu để trống: <strong>123456</strong></div>
+        <div class="form-hint" style="color:#dc2626"><i class="fas fa-shield-alt"></i> Bắt buộc nhập PIN — không có PIN mặc định vì lý do bảo mật</div>
       </div>
       <div id="mtSetupStatus" style="font-size:0.82rem;margin-bottom:12px;min-height:18px"></div>
       <div style="display:flex;gap:8px">
@@ -1068,15 +1069,16 @@ async function mtDoAdminSetup() {
   const sheetId  = document.getElementById('mtSheetIdInput')?.value.trim();
   const username = document.getElementById('mtAdminUsername')?.value.trim();
   const dispName = document.getElementById('mtAdminDisplayName')?.value.trim();
-  const pin      = document.getElementById('mtAdminPIN')?.value.trim() || '123456';
-  const pin2     = document.getElementById('mtAdminPIN2')?.value.trim() || pin;
+  const pin      = document.getElementById('mtAdminPIN')?.value.trim();
+  const pin2     = document.getElementById('mtAdminPIN2')?.value.trim();
   const status   = document.getElementById('mtSetupStatus');
 
   if (!saJson)   { status.innerHTML = '<span style="color:red">Vui lòng cung cấp Service Account JSON</span>'; return; }
   if (!username) { status.innerHTML = '<span style="color:red">Vui lòng nhập tên đăng nhập</span>'; return; }
   if (!dispName) { status.innerHTML = '<span style="color:red">Vui lòng nhập tên hiển thị</span>'; return; }
+  if (!pin || pin.length < 6) { status.innerHTML = '<span style="color:red"><i class="fas fa-shield-alt"></i> Bắt buộc nhập PIN tối thiểu 6 số để bảo mật tài khoản Admin</span>'; return; }
+  if (!/^\d{6,8}$/.test(pin)) { status.innerHTML = '<span style="color:red">PIN phải là 6-8 chữ số</span>'; return; }
   if (pin !== pin2) { status.innerHTML = '<span style="color:red">Mã PIN xác nhận không khớp</span>'; return; }
-  if (pin.length > 0 && !/^\d{4,8}$/.test(pin)) { status.innerHTML = '<span style="color:red">PIN phải là 4-8 chữ số</span>'; return; }
 
   // Validate: bắt buộc nhập spreadsheet ID (SA không thể tự tạo file)
   if (!sheetId) {
@@ -1553,7 +1555,7 @@ async function mtDoJoin() {
   const code     = document.getElementById('mtJoinCode')?.value.trim().replace(/\s/g,'').toUpperCase();
   const username = document.getElementById('mtJoinUsername')?.value.trim();
   const display  = document.getElementById('mtJoinDisplay')?.value.trim();
-  const pin      = document.getElementById('mtJoinPIN')?.value.trim() || '123456';
+  const pin      = document.getElementById('mtJoinPIN')?.value.trim();
   const status   = document.getElementById('mtJoinStatus');
 
   if (!code || code.length < 8) { status.innerHTML = '<span style="color:red">Vui lòng nhập mã mời hợp lệ</span>'; return; }
