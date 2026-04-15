@@ -1264,18 +1264,24 @@
 
   /* ─── WATCH FOR LOGIN OVERLAY ──────────────────────────────────  */
   function watchForLoginOverlay() {
-    const obs = new MutationObserver(function () {
-      const loginOverlay = document.getElementById('dvSecureAuth');
-      const loginBtn = document.getElementById('dvHelpLoginBtn');
-      if (loginOverlay) {
-        injectLoginHelpBtn();
-      } else if (loginBtn) {
-        loginBtn.remove();
-      }
-    });
-    obs.observe(document.body, { childList: true, subtree: false });
-    // Also check immediately
-    if (document.getElementById('dvSecureAuth')) injectLoginHelpBtn();
+    function startObserver() {
+      var obs = new MutationObserver(function () {
+        var loginOverlay = document.getElementById('dvSecureAuth');
+        var loginBtn = document.getElementById('dvHelpLoginBtn');
+        if (loginOverlay) {
+          injectLoginHelpBtn();
+        } else if (loginBtn) {
+          loginBtn.remove();
+        }
+      });
+      obs.observe(document.body, { childList: true, subtree: false });
+      if (document.getElementById('dvSecureAuth')) injectLoginHelpBtn();
+    }
+    if (document.body) {
+      startObserver();
+    } else {
+      document.addEventListener('DOMContentLoaded', startObserver);
+    }
   }
 
   /* ─── INJECT CSS ───────────────────────────────────────────────  */
