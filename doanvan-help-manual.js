@@ -1323,6 +1323,11 @@
     }
   }
 
-  init();
+  // Delay init until DOM is fully parsed — script runs in <head>
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+  } else {
+    init();
+  }
 
 })();
